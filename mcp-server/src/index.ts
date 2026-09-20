@@ -52,6 +52,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { buildIpcHello, IPC_PROTOCOL_CAPABILITIES, validateCapabilities, validateProtocolVersion } from './protocol.js';
 import { allTools } from './tools/index.js';
 import { registerTools } from './register-tools.js';
 import {
@@ -136,7 +137,7 @@ class DaemonClient {
     });
 
     // authenticate
-    this.socket.write(JSON.stringify({ kind: 'hello', token: this.token, agentName: this.agentName }) + '\n');
+    this.socket.write(JSON.stringify(buildIpcHello(this.token, this.agentName)) + '\n');
 
     await this.waitForWelcome();
   }
@@ -156,9 +157,22 @@ class DaemonClient {
     });
   }
 
-  private handleMessage(msg: { kind: string; sessionId?: string; id?: string; success?: boolean; result?: unknown; error?: string; reason?: string }): void {
+  private handleMessage(msg: { kind: string; sessionId?: string; id?: string; success?: boolean; result?: unknown; error?: string; reason?: string; protocolVersion?: number; capabilities?: string[] }): void {
     switch (msg.kind) {
       case 'welcome':
+        {
+          const version = validateProtocolVersion(msg.protocolVersion);
+          const capabilities = validateCapabilities(msg.capabilities, IPC_PROTOCOL_CAPABILITIES);
+          if (!version.ok || !capabilities.ok) {
+            const reason = version.reason || capabilities.reason || 'Incompatible daemon protocol.';
+            this.failAll(reason);
+            this.socket?.destroy(new Error(reason));
+            return;
+          }
+          if (version.legacy || capabilities.legacy) {
+            console.error(`[${SERVER_NAME}] connected to legacy daemon protocol; restart the daemon after upgrading.`);
+          }
+        }
         this._sessionId = msg.sessionId ?? null;
         this.connectResolvers.forEach(r => r());
         this.connectResolvers = [];

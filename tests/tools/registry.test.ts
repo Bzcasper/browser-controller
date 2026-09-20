@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { allTools, toolMap, isIdempotent, toolTimeoutMs } from '../../mcp-server/src/tools/index.js';
+import { allTools, toolManifest, toolMap, isIdempotent, toolTimeoutMs } from '../../mcp-server/src/tools/index.js';
 
 describe('Tool Registry', () => {
   // Single source of truth for the expected tool set. Both the count test and
@@ -49,6 +49,18 @@ describe('Tool Registry', () => {
     expect(toolMap.size).toBe(allTools.length);
     for (const tool of allTools) {
       expect(toolMap.get(tool.name)).toBe(tool);
+    }
+  });
+
+  it('exports a unified manifest with schema and transport policy', () => {
+    expect(toolManifest).toHaveLength(allTools.length);
+    for (const entry of toolManifest) {
+      const tool = toolMap.get(entry.name);
+      expect(tool, `${entry.name} must exist in toolMap`).toBeTruthy();
+      expect(entry.inputSchema).toMatchObject({ type: 'object' });
+      expect(entry.timeoutMs).toBe(tool?.timeoutMs);
+      expect(entry.idempotent).toBe(tool?.idempotent === true);
+      expect(['read', 'write', 'mixed']).toContain(entry.capability);
     }
   });
 

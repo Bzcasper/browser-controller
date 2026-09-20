@@ -84,12 +84,12 @@ export const ENROLLMENT_FILE = path.join(STATE_DIR, 'enrollment.json');
 // --- IPC / WS protocol message shapes --------------------------------------
 
 export type IpcClientMessage =
-  | { kind: 'hello'; token: string; agentName?: string }
+  | { kind: 'hello'; token: string; agentName?: string; protocolVersion?: number; capabilities?: string[] }
   | { kind: 'call'; id: string; tool: string; params: Record<string, unknown> }
   | { kind: 'pong' }; // heartbeat reply — daemon evicts a silent client after 3 missed pings
 
 export type IpcDaemonMessage =
-  | { kind: 'welcome'; sessionId: string; ok: true }
+  | { kind: 'welcome'; sessionId: string; ok: true; protocolVersion: number; capabilities: readonly string[] }
   | { kind: 'denied'; reason: string; ok: false }
   | { kind: 'result'; id: string; success: boolean; result?: unknown; error?: string }
   | { kind: 'status'; connectionState: string; connectedSince: number | null }

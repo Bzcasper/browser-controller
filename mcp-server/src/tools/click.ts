@@ -11,6 +11,10 @@ export const clickTool: ToolDefinition = {
     selector: z.string().optional().describe('CSS selector for the element'),
     button: z.enum(['left', 'right', 'middle']).optional().default('left'),
     doubleClick: z.boolean().optional().default(false),
+  }).superRefine((params, ctx) => {
+    if (!params.ref && !params.selector) {
+      ctx.addIssue({ code: 'custom', message: 'ref or selector is required', path: ['ref'] });
+    }
   }),
   timeoutMs: 10_000,
   handler: forwardHandler('browser_click'),

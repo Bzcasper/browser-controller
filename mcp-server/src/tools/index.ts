@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
 import { navigateTool } from './navigate.js';
 import { clickTool } from './click.js';
@@ -54,6 +55,34 @@ export const allTools: ToolDefinition[] = [
 export const toolMap = new Map<string, ToolDefinition>(
   allTools.map(t => [t.name, t]),
 );
+
+export type ToolCapability = 'read' | 'write' | 'mixed';
+
+export interface ToolManifestEntry {
+  name: string;
+  summary: string;
+  description: string;
+  inputSchema: unknown;
+  timeoutMs: number | undefined;
+  idempotent: boolean;
+  capability: ToolCapability;
+}
+
+function capabilityOf(tool: ToolDefinition): ToolCapability {
+  if (tool.idempotent === true) return 'read';
+  if (tool.name === 'browser_console' || tool.name === 'browser_network' || tool.name === 'browser_tabs') return 'mixed';
+  return 'write';
+}
+
+export const toolManifest: ToolManifestEntry[] = allTools.map((tool) => ({
+  name: tool.name,
+  summary: tool.summary,
+  description: tool.description,
+  inputSchema: z.toJSONSchema(tool.inputSchema),
+  timeoutMs: tool.timeoutMs,
+  idempotent: tool.idempotent === true,
+  capability: capabilityOf(tool),
+}));
 
 /**
  * Whether a tool is safe to retry on timeout, derived from each tool's

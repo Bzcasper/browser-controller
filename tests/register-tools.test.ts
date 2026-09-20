@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { registerTools } from '../mcp-server/src/register-tools.js';
+import { parseToolParams, registerTools } from '../mcp-server/src/register-tools.js';
 import { allTools } from '../mcp-server/src/tools/index.js';
 import type { ToolHost } from '../mcp-server/src/tools/types.js';
 
@@ -54,6 +54,43 @@ describe('registerTools — full mode (default)', () => {
     const { client, host } = await setup(true);
     await client.callTool({ name: 'browser_click', arguments: { tabId: 1, selector: '#btn' } });
     expect(host.calls).toContain('browser_click');
+  });
+
+  it('validates the full tool schema before forwarding to the host', async () => {
+    const { client, host } = await setup(true);
+    const result = await client.callTool({ name: 'browser_click', arguments: { tabId: 1 } });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toContain('ref or selector');
+    expect(host.calls).toHaveLength(0);
+  });
+
+  it('validates tool arguments inside the wrapper before reaching the host', async () => {
+    const { client, host } = await setup(true);
+    const result = await client.callTool({ name: 'browser_click', arguments: { tabId: 'not-a-number', selector: '#btn' } });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toMatch(/Invalid tool arguments|Expected number|number/i);
+    expect(host.calls).toHaveLength(0);
+  });
+
+  it('exports the same schema validation helper used by registration', () => {
+    expect(parseToolParams(allTools.find((t) => t.name === 'browser_click')!, { tabId: 1, selector: '#btn' })).toEqual({
+      tabId: 1,
+      selector: '#btn',
+      button: 'left',
+      doubleClick: false,
+    });
+    expect(() => parseToolParams(allTools.find((t) => t.name === 'browser_click')!, { tabId: 'bad', selector: '#btn' })).toThrow();
+  });
+
+  it('rejects oversized argument payloads before reaching the host', async () => {
+    const { client, host } = await setup(true);
+    const result = await client.callTool({
+      name: 'browser_type',
+      arguments: { tabId: 1, selector: '#in', text: 'x'.repeat(1_100_000) },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toMatch(/exceed|too_big|too large/i);
+    expect(host.calls).toHaveLength(0);
   });
 
   it('meta tool reports every tool as active', async () => {

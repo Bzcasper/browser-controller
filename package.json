@@ -13,7 +13,10 @@
     "dev": "tsc -p mcp-server/tsconfig.json --watch",
     "start": "node mcp-server/dist/index.js",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "lint": "eslint mcp-server/src tests extension vitest.config.ts eslint.config.js",
+    "security:audit": "npm audit --omit=dev --audit-level=high",
     "typecheck": "tsc -p mcp-server/tsconfig.json --noEmit",
     "setup:cursor": "node agent-config/setup.mjs cursor",
     "setup:claude": "node agent-config/setup.mjs claude",
@@ -67,9 +70,16 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.6.1",
+    "@babel/core": "^7.29.7",
+    "@babel/eslint-parser": "^7.29.9",
+    "@babel/preset-typescript": "^7.29.7",
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^26.6.2",
     "@types/ws": "^8.5.10",
+    "@vitest/coverage-v8": "^5.0.1",
     "ai-context-kit": "^0.1.1",
+    "eslint": "^9.39.5",
+    "globals": "^17.12.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"
   }

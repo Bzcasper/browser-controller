@@ -63,7 +63,7 @@ describe('ExtensionBridge', () => {
 
   function createBridge(
     port: number,
-    opts?: Partial<{ maxRetries: number; token: string; enrollmentSecret: string }>,
+    opts?: Partial<{ maxRetries: number; token: string; enrollmentSecret: string; maxWsPayloadBytes: number }>,
   ): ExtensionBridge {
     const b = new ExtensionBridge({
       port,
@@ -71,6 +71,7 @@ describe('ExtensionBridge', () => {
       pingIntervalMs: 60_000,
       token: opts?.token,
       enrollmentSecret: opts?.enrollmentSecret,
+      maxWsPayloadBytes: opts?.maxWsPayloadBytes,
     });
     bridges.push(b);
     return b;
@@ -102,6 +103,21 @@ describe('ExtensionBridge', () => {
     expect(bridge.isConnected()).toBe(true);
   });
 
+  it('closes oversized WebSocket frames before parsing them', async () => {
+    const port = nextPort();
+    const bridge = createBridge(port);
+    await bridge.start();
+
+    const client = await connectClient(port);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      client.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    client.send(JSON.stringify({ id: 'huge', success: true, result: 'x'.repeat(1_100_000) }));
+
+    await expect(closed).resolves.toMatchObject({ code: 1009 });
+    expect(bridge.isConnected()).toBe(false);
+  });
+
   it('sends tool call and receives response', async () => {
     const port = nextPort();
     const bridge = createBridge(port);
@@ -117,6 +133,19 @@ describe('ExtensionBridge', () => {
 
     const result = await bridge.callTool('browser_click', { ref: 'e1' });
     expect(result).toEqual({ clicked: true });
+  });
+
+  it('closes an extension socket that sends a frame over the payload limit', async () => {
+    const port = nextPort();
+    const bridge = createBridge(port, { maxWsPayloadBytes: 64 });
+    await bridge.start();
+
+    const client = await connectClient(port);
+    const closed = new Promise<number>((resolve) => client.once('close', (code) => resolve(code)));
+    client.send('x'.repeat(256));
+
+    await expect(closed).resolves.toBe(1009);
+    expect(bridge.isConnected()).toBe(false);
   });
 
   it('rejects on error response', async () => {
