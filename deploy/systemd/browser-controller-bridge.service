@@ -1,0 +1,17 @@
+[Unit]
+Description=Browser Controller MCP stdio-to-SSE bridge (for n8n/MCPHub)
+Requires=browser-controller-daemon.service
+After=network.target browser-controller-daemon.service
+
+[Service]
+Environment=PATH=%h/.nvm/versions/node/v24.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=BROWSER_CONTROLLER_DAEMON_MODE=connect
+ExecStart=%h/.local/bin/mcp-proxy node %h/projects/browser-controller/mcp-server/dist/index.js --port 9090 --host 0.0.0.0 -e MCP_AGENT_NAME n8n-bridge -e BROWSER_CONTROLLER_DAEMON_MODE connect
+Restart=always
+RestartSec=3
+StandardOutput=append:%h/.browser-controller/mcp-bridge.log
+StandardError=append:%h/.browser-controller/mcp-bridge.log
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

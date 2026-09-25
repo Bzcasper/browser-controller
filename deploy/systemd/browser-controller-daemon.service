@@ -1,0 +1,15 @@
+[Unit]
+Description=Browser Controller shared daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/browser-controller
+Environment=HOME=%h
+ExecStart=%h/.nvm/versions/node/v24.19.0/bin/node %h/projects/browser-controller/mcp-server/dist/daemon.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
