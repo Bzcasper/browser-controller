@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +19,15 @@ const TOKEN = JSON.parse(fs.readFileSync(path.join(STATE, 'token.json'), 'utf8')
 const DAEMON = path.join(ROOT, 'mcp-server', 'dist', 'daemon.js');
 const UPLOAD = path.join(STATE, 'smoke-upload.txt');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const execFileAsync = promisify(execFile);
+const SYSTEMD_SERVICE = 'browser-controller-daemon.service';
+const userSystemdEnv = {
+  ...process.env,
+  XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`,
+};
+if (!userSystemdEnv.DBUS_SESSION_BUS_ADDRESS) {
+  userSystemdEnv.DBUS_SESSION_BUS_ADDRESS = `unix:path=${userSystemdEnv.XDG_RUNTIME_DIR}/bus`;
+}
 const log = (...args) => console.log('[smoke]', ...args);
 let server, daemon, tabId, client, startedByTest = false;
 
@@ -69,6 +79,25 @@ async function stopDaemon() {
 }
 async function call(tool, params) { return client.call(tool, params); }
 
+async function hasManagedDaemon() {
+  try {
+    const { stdout } = await execFileAsync('systemctl', ['--user', 'show', '--property=LoadState', '--value', SYSTEMD_SERVICE], { env: userSystemdEnv });
+    return stdout.trim() === 'loaded';
+  } catch {
+    return false;
+  }
+}
+
+async function restartManagedDaemon() {
+  await execFileAsync('systemctl', ['--user', 'restart', SYSTEMD_SERVICE], { env: userSystemdEnv });
+  await waitForDaemon();
+}
+
+async function startManagedDaemon() {
+  await execFileAsync('systemctl', ['--user', 'start', SYSTEMD_SERVICE], { env: userSystemdEnv });
+  await waitForDaemon();
+}
+
 
 async function connect() {
   const socket = net.createConnection(SOCKET);
@@ -117,13 +146,29 @@ async function main() {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const page = `http://127.0.0.1:${server.address().port}/`;
-  if (await daemonAlive()) log('daemon already running; restarting it during test'); else { startDaemon(); startedByTest = true; }
+  const managedDaemon = await hasManagedDaemon();
+  const wasRunning = await daemonAlive();
+  if (managedDaemon) {
+    if (!wasRunning) await startManagedDaemon();
+    log(wasRunning ? 'systemd daemon already running; restarting service during test' : 'started systemd daemon for test');
+  } else if (!wasRunning) {
+    startDaemon();
+    startedByTest = true;
+  } else {
+    log('unmanaged daemon already running; restarting it during test');
+  }
   await waitForDaemon();
   client = await connect();
   await call('browser_tabs', { action: 'list' });
-  await stopDaemon();
-  if (!(await daemonAlive())) startDaemon();
-  await waitForDaemon(); client.close(); client = await connect();
+  client.close();
+  if (managedDaemon) {
+    await restartManagedDaemon();
+  } else {
+    await stopDaemon();
+    if (!(await daemonAlive())) startDaemon();
+    await waitForDaemon();
+  }
+  client = await connect();
   assert(Array.isArray((await call('browser_tabs', { action: 'list' }))?.tabs), 'tab list failed after daemon restart');
   log('daemon restart/reconnect verified');
 
