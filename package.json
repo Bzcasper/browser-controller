@@ -18,6 +18,7 @@
     "daemon:status": "node scripts/daemon.mjs status",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke:real-chrome": "node scripts/smoke-real-chrome.mjs",
     "typecheck": "tsc -p mcp-server/tsconfig.json --noEmit",
     "setup:cursor": "node agent-config/setup.mjs cursor",
     "setup:claude": "node agent-config/setup.mjs claude",
