@@ -47,7 +47,7 @@ It already has your browser open right there. It just can't see it.
 
 ## How it works
 
-Three pieces, all on your machine. Nothing leaves localhost.
+Three pieces, all on your machine. Nothing leaves localhost. The daemon control plane is hard-bound to `127.0.0.1`; there is no supported remote/n8n listener.
 
 ```
   Agent (Cursor / Claude / Windsurf)        ── other agents connect too ──┐

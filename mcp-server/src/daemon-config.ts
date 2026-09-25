@@ -48,7 +48,15 @@ export function envInt(name: string, def: number, min = 1, max?: number): number
 }
 
 export const DEFAULT_WS_PORT = envInt('WS_PORT', 7225, 1, 65535);
-export const DEFAULT_WS_HOST = process.env.WS_HOST || '127.0.0.1';
+/**
+ * The daemon's HTTP/WebSocket control plane is intentionally loopback-only.
+ *
+ * Do not make this configurable to 0.0.0.0: the extension-facing token gate is
+ * useful for local pairing, but it is not a replacement for a network trust
+ * boundary. Remote callers (including n8n) require a separately authenticated
+ * transport and must not be given direct access to this browser socket.
+ */
+export const DEFAULT_WS_HOST = '127.0.0.1';
 
 /**
  * Directory under the user's home where daemon state lives (token, socket,

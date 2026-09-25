@@ -28,7 +28,8 @@ Report vulnerabilities through:
 
 ## Security Model
 
-- **Local-only communication**: WebSocket between extension and server runs on localhost only.
+- **Local-only communication**: the daemon's HTTP/WebSocket control plane is hard-bound to IPv4 loopback (`127.0.0.1`), not configurable through `WS_HOST`. WebSocket traffic between the extension and daemon remains local. MCP clients use stdio and then an authenticated local IPC socket; they do not get a TCP listener.
+- **Remote callers and n8n**: Browser Controller has no supported remote or n8n ingress protocol. Do not publish port 7225 or change the listener to a wildcard address. A remote integration should run on the same host and reach the MCP client through its approved local process boundary, or be given a separately authenticated transport; browser-control credentials must not be reused as a network API key.
 - **Origin validation (exact-match on a pinned extension ID)**: the daemon pins the extension's `chrome-extension://<id>` Origin on first contact, then rejects every later request whose Origin is not an exact match. This applies to BOTH the WebSocket upgrade and the HTTP endpoints (`/pair`, `/status`, `/kill`) through one shared gate — a web page and a co-installed hostile extension (which carries its own Origin and cannot forge ours) are both rejected. The browser sets the `Origin` header; it cannot be forged from page JS.
 - **Token auth on the control plane**: the WebSocket upgrade additionally requires the daemon's auth token (sent out-of-band via `Sec-WebSocket-Protocol` subprotocol, with a `?token=` legacy fallback). The HTTP endpoints do not require the token — they rely on the Origin gate instead, because `/pair` is itself how the token is first obtained (a chicken-and-egg a token gate would break).
 - **No data exfiltration**: Nothing leaves your machine. No cloud, no telemetry, no analytics.

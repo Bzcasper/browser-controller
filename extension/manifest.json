@@ -19,8 +19,7 @@
   ],
   "host_permissions": [
     "<all_urls>",
-    "http://127.0.0.1:7225/*",
-    "http://localhost:7225/*"
+    "http://127.0.0.1:7225/*"
   ],
   "background": {
     "service_worker": "background.js",
