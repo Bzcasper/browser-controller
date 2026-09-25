@@ -158,6 +158,45 @@ Green dot = you're connected. Your agent can now see your browser.
 
 > These secrets prevent any other local process from opening a WebSocket and driving your authenticated browser sessions. To rotate them, stop your MCP clients, delete the folder, and the next run recreates both secrets. See [SECURITY.md](SECURITY.md) for the full threat model.
 
+### Runtime lifecycle (authoritative daemon)
+
+The **daemon** is the only process that owns the extension-facing runtime. MCP
+clients are thin stdio adapters and may start it automatically, but deployment
+scripts should use the lifecycle commands below so there is one restart owner.
+Do not run a second `daemon.js` or install a launch supervisor that competes for
+port `7225`.
+
+```bash
+npm run build
+npm run daemon:start      # start, or report the already-running PID
+npm run daemon:status     # JSON health/runtime information
+npm run daemon:stop       # graceful SIGTERM; removes runtime metadata
+npm run daemon:restart    # stop, then start; preserves token/enrollment
+```
+
+The daemon survives browser/Chrome restarts: token, enrollment secret, and
+pairing remain in `~/.browser-controller/` (override with `BC_STATE_DIR`), and
+the extension reconnects to the same endpoint. The lifecycle wrapper reads the
+`daemon.json` PID and is safe to run repeatedly; a stale lock is removed only
+when its recorded PID is not alive.
+
+### Expected endpoints
+
+- **MCP endpoint:** stdio, launched as `node mcp-server/dist/index.js` (the
+  standard `mcpServers` command/args form is shown above).
+- **Extension runtime:** `ws://127.0.0.1:7225` by default, with HTTP
+  `/pair`, `/status`, and `/kill?sessionId=...` on the same port. These are
+  daemon/popup endpoints, not an MCP HTTP transport.
+- **MCP client IPC:** `~/.browser-controller/daemon.sock` on Unix or
+  `\\.\pipe\browser-controller` on Windows. It is internal and token-authenticated.
+- **State:** `~/.browser-controller/{daemon.json,daemon.lock,token.json,
+  enrollment.json,daemon.log}`. `WS_PORT`, `WS_HOST`, and `BC_STATE_DIR` are the
+  supported configuration overrides.
+
+This preserves the real Chrome session workflow: no Playwright/headless browser
+is launched, and the existing Chrome profile, cookies, logins, and tabs remain
+the browser being controlled.
+
 ---
 
 ## Using it
