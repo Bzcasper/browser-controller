@@ -40,6 +40,17 @@ const NAMED_KEYS = {
   Meta: { code: 'MetaLeft', vk: 91 },
 };
 for (let i = 1; i <= 12; i++) NAMED_KEYS[`F${i}`] = { code: `F${i}`, vk: 111 + i };
+// US-layout code + Windows virtual key code for printable punctuation.
+const PUNCTUATION = {
+  '.': ['Period', 190], '>': ['Period', 190], ',': ['Comma', 188], '<': ['Comma', 188],
+  '-': ['Minus', 189], '_': ['Minus', 189], '=': ['Equal', 187], '+': ['Equal', 187],
+  '/': ['Slash', 191], '?': ['Slash', 191], ';': ['Semicolon', 186], ':': ['Semicolon', 186],
+  "'": ['Quote', 222], '"': ['Quote', 222], '[': ['BracketLeft', 219], '{': ['BracketLeft', 219],
+  ']': ['BracketRight', 221], '}': ['BracketRight', 221], '\\': ['Backslash', 220], '|': ['Backslash', 220],
+  '`': ['Backquote', 192], '~': ['Backquote', 192],
+  '!': ['Digit1', 49], '@': ['Digit2', 50], '#': ['Digit3', 51], '$': ['Digit4', 52], '%': ['Digit5', 53],
+  '^': ['Digit6', 54], '&': ['Digit7', 55], '*': ['Digit8', 56], '(': ['Digit9', 57], ')': ['Digit0', 48],
+};
 const KEY_ALIASES = { Esc: 'Escape', Return: 'Enter', Del: 'Delete', Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight' };
 
 /** CDP key definition for a key name ("Enter", "a", "7", "ب"). */
@@ -52,6 +63,9 @@ export function keyDefinition(rawKey) {
   const upper = ch.toUpperCase();
   if (/^[a-z]$/i.test(ch)) return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch };
   if (/^[0-9]$/.test(ch)) return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch };
+  // Numeric/mask plugins filter on keyCode: a "." with keyCode 0 is dropped.
+  const punct = PUNCTUATION[ch];
+  if (punct) return { key: ch, code: punct[0], vk: punct[1], text: ch };
   return { key: ch, code: '', vk: 0, text: ch };
 }
 

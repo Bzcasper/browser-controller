@@ -52,6 +52,8 @@ describe('trusted input (CDP)', () => {
     expect(ti.keyDefinition('7')).toMatchObject({ code: 'Digit7', vk: 55 });
     expect(ti.keyDefinition('ب')).toMatchObject({ key: 'ب', text: 'ب' });
     expect(ti.keyDefinition('F5')).toMatchObject({ vk: 116 });
+    expect(ti.keyDefinition('.')).toMatchObject({ code: 'Period', vk: 190, text: '.' });
+    expect(ti.keyDefinition('-')).toMatchObject({ code: 'Minus', vk: 189 });
     expect(() => ti.keyDefinition('NoSuchKey')).toThrow(/Unknown key/);
   });
 
