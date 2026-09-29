@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/compnew2006/browser-controller/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/compnew2006/browser-controller/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-  <a href="https://github.com/compnew2006/browser-controller/releases"><img src="https://img.shields.io/badge/version-2.2.1-blue?style=flat-square" alt="v2.2.1" /></a>
+  <a href="https://github.com/compnew2006/browser-controller/releases"><img src="https://img.shields.io/badge/version-2.3.0-blue?style=flat-square" alt="v2.3.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node >= 20" />
   <img src="https://img.shields.io/badge/TypeScript-strict-blue?style=flat-square" alt="TypeScript strict" />
@@ -41,7 +41,9 @@ It already has your browser open right there. It just can't see it.
 - **Open-dialog rescue.** A native `alert`/`confirm`/`prompt` freezes the page's JS thread — `browser_handle_dialog` dismisses it out-of-band via CDP, no page JS needed, which also un-blocks every other tool on that tab. `browser_tabs close/focus` always work, even on a frozen tab.
 - **Authenticated local connection.** Token + one-time enrollment secret, so no other local process can silently drive your browser. Everything stays on localhost — no cloud, no telemetry.
 - **Versioned compatibility handshake.** The daemon and extension advertise an application-protocol version, build version, and capabilities before tool traffic is accepted. Explicitly incompatible protocol majors fail with an actionable error instead of producing unexplained timeouts; the build version is diagnostic and does not by itself make compatible peers fail.
-- **No debugger banner.** `browser_evaluate` runs in the page's MAIN world via `chrome.scripting` — no yellow "this tab is being debugged" banner, and real values return across the MV3 world boundary.
+- **Real, trusted input.** Clicks, typing and key presses go through the Chrome DevTools Protocol, so the page sees `isTrusted` events, focus really moves, default actions run (Tab moves focus, Enter submits, arrows drive autocomplete menus) and focus/blur fire even while the window is in the background — legacy grids and lookup widgets behave as they do for a person. One debugger session per tab is reused and detached after 30 s idle (the yellow "being debugged" banner shows only while it is attached). Pass `trusted: false` for the old synthetic events with no banner; they are also the automatic fallback when the debugger can't attach.
+- **Batches.** `browser_batch` runs a list of tool calls in one round-trip and stops at the first failure — a click → type → Tab → wait → read sequence is one call instead of five.
+- **Console-style JavaScript.** `browser_evaluate` accepts code as you'd type it in DevTools: top-level `await`, several statements, the last expression's value is returned, DOM nodes come back as readable descriptions — and page CSP doesn't block it.
 - **Honest errors.** Every tool failure reaches your agent as a real `isError` result with the full payload — no "success" responses hiding failures mid-workflow.
 
 ---
@@ -241,7 +243,8 @@ A fixed-height tabbed shell (the body never scrolls, only the lists do):
 - **Forgot `tabId`?** You'll get a clear error: `tabId is required. Call browser_tabs list first.`
 - **Protected pages** (`chrome://`, the Web Store, devtools) can't be scripted — you'll get `Cannot access protected page (chrome://...)` instead of a silent hang.
 - **`browser_navigate`** is the one tool where `tabId` is optional (defaults to the active tab) — but for multi-agent safety, pass it explicitly. **Hash-only changes** (e.g. `/page` → `/page#section`) resolve as soon as the URL is set, without waiting for a `complete` event (SPAs don't reload on hash change, so that event never fires).
-- **`browser_evaluate`** runs in the page's MAIN world without the debugger banner and returns JSON-serializable values across the MV3 world boundary. It uses page-side `eval`, so a strict page Content Security Policy can reject it. Use `browser_run_action` when CDP-based execution is required. Both tools are powerful and **non-idempotent**, so they are not auto-retried on timeout.
+- **`browser_evaluate`** runs over CDP in REPL mode (top-level `await`, last expression returned, `timeout` up to 120 s). `mode: "scripting"` runs it in the page's MAIN world via `chrome.scripting` instead — no debugger banner, but a strict page CSP can reject it and top-level `await` isn't available. It and `browser_run_action` are powerful and **non-idempotent**, so they are not auto-retried on timeout.
+- **`browser_type`** types like a person: `change`/blur fire when focus leaves the field, so follow it with `browser_press_key { key: "Tab" }` to commit a value. It returns the field's value after typing.
 - **Iframe reach is origin-bound.** Snapshot, find, and interaction handlers can descend into same-origin iframes. Browser same-origin rules prevent those DOM paths from entering cross-origin iframes; use a separately targetable tab or an origin-specific integration for content inside them.
 - **The control shield is top-frame protection.** Its frame and input interception are installed in the top document. Do not treat it as a security boundary for independently focused or cross-origin child frames; avoid manual input anywhere in a tab while an agent owns it.
 - **Scrolling virtualized feeds** (Facebook/Instagram/Twitter): `browser_scroll` returns `refsMayBeStale: true` because those sites recycle DOM nodes. Re-snapshot before your next interaction.
@@ -252,7 +255,7 @@ A fixed-height tabbed shell (the body never scrolls, only the lists do):
 
 ## 🧠 Teach Your Agent
 
-The agent can use all 24 tools out of the box, but it works better when it knows the **tab-first** workflow. From the repo root:
+The agent can use all 25 tools out of the box, but it works better when it knows the **tab-first** workflow. From the repo root:
 
 ```bash
 npm run setup:cursor   # or: node mcp-server/dist/index.js --setup cursor
@@ -281,7 +284,7 @@ See [`agent-config/`](agent-config/) for manual installation or to customize the
 
 ## What It Can Do
 
-24 tools. Every page-interaction tool takes a **`tabId`** (the one exception is `browser_navigate`, where it's optional).
+25 tools. Every page-interaction tool takes a **`tabId`** (the one exception is `browser_navigate`, where it's optional).
 
 **See**
 
@@ -289,7 +292,7 @@ See [`agent-config/`](agent-config/) for manual installation or to customize the
 |------|-------------|
 | `browser_observe` | Compact atomic semantic observation with snapshot/document identity, geometry, state, and dynamic allowed actions |
 | `browser_snapshot` | Accessibility tree with element refs. Compact mode (default) returns only interactive elements. Traverses open shadow DOM + same-origin iframes. |
-| `browser_screenshot` | Capture a tab as an image (activates the tab first to capture) |
+| `browser_screenshot` | Capture a tab as an image over CDP — `maxWidth` / `scale` / `jpeg` to cut tokens, `fullPage` for the whole page |
 | `browser_text` | Extract raw text from page or element |
 | `browser_find` | Query elements by natural language — walks same-origin iframes too |
 
@@ -298,10 +301,11 @@ See [`agent-config/`](agent-config/) for manual installation or to customize the
 | Tool | What it does |
 |------|-------------|
 | `browser_act` | Safely click/type/select/focus/hover/keypress/scroll/upload against a `browser_observe` snapshot |
-| `browser_click` | Click by ref or CSS selector — pierces same-origin iframes |
+| `browser_click` | Real (trusted) click by ref or CSS selector — pierces same-origin iframes |
 | `browser_click_text` | Click by visible text. Works through React portals and overlays |
-| `browser_type` | Type into inputs and contenteditable fields |
-| `browser_press_key` | Key combos (Enter, Escape, Ctrl+A) |
+| `browser_type` | Real key presses into inputs and contenteditable fields; returns the resulting value |
+| `browser_press_key` | Real key presses and combos (`Enter`, `Tab`, `ctrl+a`) |
+| `browser_batch` | Run several tool calls in one round-trip; stops at the first failure |
 | `browser_scroll` | Scroll pages and virtual containers |
 | `browser_hover` | Trigger tooltips and dropdowns |
 | `browser_select` | Pick from native `<select>` dropdowns |
@@ -337,7 +341,7 @@ Paths are absolute and local to the machine running the browser. Omit `ref`/`sel
 |------|-------------|
 | `browser_console` | Console output (log, warn, error) — per-tab, capped at 200 entries |
 | `browser_network` | XHR/fetch requests with status codes — per-tab, optional `limit` |
-| `browser_evaluate` | Run JavaScript in the page's MAIN world without a debugger banner; page CSP may block its use of `eval` |
+| `browser_evaluate` | Run JavaScript like the DevTools console: top-level `await`, last value returned, not blocked by CSP |
 | `browser_handle_dialog` | Dismiss/accept an open alert/confirm/prompt via CDP (works on frozen pages) |
 | `browser_run_action` | Run a self-contained JS action object via CDP |
 
@@ -362,7 +366,7 @@ Paths are absolute and local to the machine running the browser. Omit `ref`/`sel
 | Env var | Default | What it does |
 |---------|---------|-------------|
 | `WS_PORT` | `7225` | WebSocket port the daemon uses for the extension connection |
-| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset) | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of loading all 24 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
+| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset) | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of loading all 25 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
 | `MCP_AGENT_NAME` | (auto: IDE name) | Override the agent name shown in the popup (same as `--agent`) |
 
 ### Daemon state files
@@ -432,7 +436,7 @@ browser-controller/
 │       ├── index.ts         Thin stdio MCP client (spawns daemon, multiplexes)
 │       ├── bridge.ts        Extension WS server + cross-platform port probe
 │       ├── register-tools.ts Progressive-disclosure wiring
-│       └── tools/           One file per tool (24), registry pattern
+│       └── tools/           One file per tool (25), registry pattern
 ├── extension/           Chrome extension (Manifest V3, plain JS, ES modules)
 │   ├── background.js        Wiring only (~30 lines): inject router, register events, connect
 │   ├── lib/                 state (buffers/locks/persistence), connection (WS lifecycle),
