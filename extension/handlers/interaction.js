@@ -6,17 +6,53 @@
 import { resolveTab, requireTarget, safeExec, getFallback } from '../lib/page-exec.js';
 import { autoReSnapshot } from './inspection.js';
 import { PAGE_FALLBACK_INSTALL } from '../utils/smart-selector.js';
+import { trustedSender, locateTarget, releaseShield, cdpClickAt, cdpKeyPress, cdpTypeText, keyDefinition } from '../lib/trusted-input.js';
 
 export { handleDialog, handleDrag, handleFillForm } from './interaction-advanced.js';
 
+/** Shared REF_GONE recovery: re-snapshot and hand fresh refs back (no auto-retry). */
+async function refGone(tabId, res, ref) {
+  const fresh = await autoReSnapshot(tabId);
+  return {
+    success: false,
+    error: `Element ${res._ref || ref} is gone from the DOM (feed scrolled/virtualized). Fresh refs captured — retry with a new ref.`,
+    freshRefs: fresh,
+  };
+}
+
+const BUTTONS = new Set(['left', 'right', 'middle']);
+
 export async function handleClick(params) {
-  const { tabId, ref, selector, button = 'left', doubleClick = false } = params;
+  const { tabId, ref, selector, button = 'left', doubleClick = false, trusted } = params;
   await resolveTab(tabId);
   requireTarget(params);
   const fb = getFallback(tabId, ref);
   // Install the fallback page runtime only when a descriptor exists (v2
   // install-once pattern — eval rebuilding is impossible under MV3 CSP).
   if (fb) await safeExec(tabId, PAGE_FALLBACK_INSTALL, []);
+
+  // Trusted path: a real mouse click at the element's centre over CDP, so
+  // focus moves, default actions run and the page sees isTrusted:true.
+  const send = await trustedSender(tabId, trusted);
+  if (send && BUTTONS.has(button)) {
+    const loc = await locateTarget(tabId, { ref, selector, fb });
+    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref);
+    if (loc?.success && loc.visible) {
+      try {
+        await cdpClickAt(send, loc.x, loc.y, { button, clickCount: doubleClick ? 2 : 1 });
+      } finally {
+        await releaseShield(tabId);
+      }
+      return {
+        success: true,
+        input: 'cdp',
+        ...(loc.via ? { via: loc.via } : {}),
+        ...(loc.occludedBy ? { warning: `click point is covered by ${loc.occludedBy}` } : {}),
+      };
+    }
+    await releaseShield(tabId);
+    // Zero-size element: no point to hit — fall through to the synthetic path.
+  }
 
   const res = await safeExec(tabId, async (_ref, _sel, _btn, _dbl, _fb) => {
     // Same-origin iframe piercing (field report: legacy UIs live inside
@@ -97,25 +133,47 @@ export async function handleClick(params) {
   // Auto-re-snapshot and embed fresh refs so the agent retries in ONE step.
   // We do NOT auto-retry the click: it's non-idempotent and the element that
   // re-appears may be a different post after the scroll shifted the feed.
-  if (res && res.success === false && res.error === 'REF_GONE') {
-    const fresh = await autoReSnapshot(tabId);
-    return {
-      success: false,
-      error: `Element ${res._ref || ref} is gone from the DOM (feed scrolled/virtualized). Fresh refs captured — retry with a new ref.`,
-      freshRefs: fresh,
-    };
-  }
+  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref);
   return res;
 }
 
 export async function handleType(params) {
-  const { tabId, ref, selector, text, clear = false } = params;
+  const { tabId, ref, selector, text, clear = false, trusted } = params;
   await resolveTab(tabId);
   requireTarget(params);
   const fb = getFallback(tabId, ref);
   // Install the fallback page runtime only when a descriptor exists (v2
   // install-once pattern — eval rebuilding is impossible under MV3 CSP).
   if (fb) await safeExec(tabId, PAGE_FALLBACK_INSTALL, []);
+
+  // Trusted path: focus the field, then real key presses over CDP (keydown /
+  // keypress / input / keyup per character). Like a user, this does NOT fire
+  // `change` until focus leaves the field — press Tab to commit.
+  const send = await trustedSender(tabId, trusted);
+  if (send) {
+    const loc = await locateTarget(tabId, { ref, selector, fb, mode: clear ? 'clear' : 'focus' });
+    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref);
+    if (loc?.success && (loc.focused || loc.visible)) {
+      let after;
+      try {
+        // Not focusable by script (custom widget): click it like a user would.
+        if (!loc.focused) await cdpClickAt(send, loc.x, loc.y);
+        if (clear && loc.needsSelectAll) await cdpKeyPress(send, 'a', ['ctrl']);
+        if (clear && loc.hasText && !text) await cdpKeyPress(send, 'Backspace');
+        await cdpTypeText(send, text);
+      } finally {
+        after = await releaseShield(tabId);
+      }
+      return {
+        success: true,
+        typed: text,
+        input: 'cdp',
+        ...(after?.value != null ? { value: after.value } : {}),
+        ...(loc.via ? { via: loc.via } : {}),
+      };
+    }
+    await releaseShield(tabId);
+  }
 
   const res = await safeExec(tabId, (_ref, _sel, _text, _clear, _fb) => {
     // Same-origin iframe piercing (field report: legacy UIs live inside
@@ -177,20 +235,49 @@ export async function handleType(params) {
 
   // Virtualization recovery (same as click): type target is gone, so
   // auto-re-snapshot and embed fresh refs. No auto-retry (non-idempotent).
-  if (res && res.success === false && res.error === 'REF_GONE') {
-    const fresh = await autoReSnapshot(tabId);
-    return {
-      success: false,
-      error: `Element ${res._ref || ref} is gone from the DOM (feed scrolled/virtualized). Fresh refs captured — retry with a new ref.`,
-      freshRefs: fresh,
-    };
-  }
+  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref);
   return res;
 }
 
+/** "ctrl+a" / "Control+Shift+Tab" -> { key: 'a', mods: ['ctrl'] }; plain keys pass through. */
+export function parseKeyCombo(key, modifiers = []) {
+  const mods = [...modifiers];
+  if (typeof key !== 'string' || key.length < 3 || !key.includes('+')) return { key, mods };
+  const parts = key.split('+');
+  const last = parts.pop() || '+';
+  const alias = { control: 'ctrl', ctrl: 'ctrl', alt: 'alt', option: 'alt', shift: 'shift', meta: 'meta', cmd: 'meta', command: 'meta', win: 'meta' };
+  for (const part of parts) {
+    const m = alias[part.trim().toLowerCase()];
+    if (!m) return { key, mods: [...modifiers] };
+    if (!mods.includes(m)) mods.push(m);
+  }
+  return { key: last, mods };
+}
+
 export async function handlePressKey(params) {
-  const { tabId, key, modifiers = [], ref, selector } = params;
+  const { tabId, ref, selector, trusted } = params;
+  const { key, mods: modifiers } = parseKeyCombo(params.key, params.modifiers || []);
   await resolveTab(tabId);
+
+  // Trusted path: a real key press, so default actions run (Tab moves focus
+  // and fires blur/focusout, Enter submits, arrows drive autocomplete menus).
+  let knownKey = true;
+  try { keyDefinition(key); } catch { knownKey = false; }
+  const send = knownKey ? await trustedSender(tabId, trusted) : null;
+  if (send) {
+    const loc = await locateTarget(tabId, { ref, selector, mode: ref || selector ? 'focus' : 'active' });
+    if (!loc || loc.success === false) {
+      await releaseShield(tabId);
+      if (ref || selector) return { success: false, error: `Element ${ref ? `with ref ${ref}` : `with selector ${selector}`} not found` };
+    }
+    let after;
+    try {
+      await cdpKeyPress(send, key, modifiers);
+    } finally {
+      after = await releaseShield(tabId);
+    }
+    return { success: true, key, ...(modifiers.length ? { modifiers } : {}), input: 'cdp', ...(after?.focusedTag ? { focused: after.focusedTag } : {}) };
+  }
 
   return safeExec(tabId, (_key, _mods, _ref, _sel) => {
     // Same-origin iframe piercing (field report: legacy UIs live inside
@@ -244,9 +331,24 @@ export async function handlePressKey(params) {
 }
 
 export async function handleHover(params) {
-  const { tabId, ref, selector } = params;
+  const { tabId, ref, selector, trusted } = params;
   await resolveTab(tabId);
   requireTarget(params);
+
+  const send = await trustedSender(tabId, trusted);
+  if (send) {
+    const loc = await locateTarget(tabId, { ref, selector });
+    if (loc?.success && loc.visible) {
+      try {
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: loc.x, y: loc.y });
+      } finally {
+        await releaseShield(tabId);
+      }
+      return { success: true, input: 'cdp' };
+    }
+    await releaseShield(tabId);
+    if (loc && loc.success === false) return { success: false, error: 'Element not found' };
+  }
 
   return safeExec(tabId, (_ref, _sel) => {
     // Same-origin iframe piercing (field report: legacy UIs live inside

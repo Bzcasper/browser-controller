@@ -44,6 +44,9 @@ export async function showLockShield(tabId, label) {
             // locked tabs. Real user input is isTrusted===true (DOM invariant,
             // unforgeable) and gets blocked. (Fix-loop 3: audit C2.)
             if (e.isTrusted === false) return;
+            // The agent's own CDP input (trusted-input.js) is isTrusted===true
+            // too: it opens a short pass-through window around each action.
+            if (window.__bcAgentInputUntil > Date.now()) return;
             e.preventDefault();
             e.stopImmediatePropagation();
           };
