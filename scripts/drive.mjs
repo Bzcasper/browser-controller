@@ -13,7 +13,10 @@ import path from 'node:path';
 
 const STATE = path.join(os.homedir(), '.browser-controller');
 const token = JSON.parse(fs.readFileSync(path.join(STATE, 'token.json'), 'utf8')).token;
-const sockPath = path.join(STATE, 'daemon.sock');
+// Must match daemon-config.ts: Windows uses a named pipe, not a socket file.
+const sockPath = process.platform === 'win32'
+  ? '\\\\.\\pipe\\browser-controller'
+  : path.join(STATE, 'daemon.sock');
 
 const tool = process.argv[2];
 if (!tool) { console.error('usage: drive.mjs <tool> [json params]'); process.exit(1); }
