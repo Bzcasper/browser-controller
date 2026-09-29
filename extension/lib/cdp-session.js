@@ -21,6 +21,7 @@ function armIdle(tabId) {
   const s = sessions.get(tabId);
   if (!s) return;
   clearTimeout(s.timer);
+  if (s.busy > 0) return; // a long withCdp() call is still using the session
   s.timer = setTimeout(() => { detachCdp(tabId); }, IDLE_MS);
 }
 
@@ -65,7 +66,7 @@ export async function ensureViewport(tabId) {
 export async function ensureCdp(tabId) {
   let s = sessions.get(tabId);
   if (!s) {
-    s = { ready: attach(tabId), timer: null };
+    s = { ready: attach(tabId), timer: null, busy: 0 };
     sessions.set(tabId, s);
     try {
       await s.ready;
@@ -80,12 +81,15 @@ export async function ensureCdp(tabId) {
   return (method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
 }
 
-/** Run fn(send) with the tab's session; keeps the session alive for reuse. */
+/** Run fn(send) with the tab's session; no idle detach while fn runs. */
 export async function withCdp(tabId, fn) {
   const send = await ensureCdp(tabId);
+  const s = sessions.get(tabId);
+  if (s) { s.busy++; clearTimeout(s.timer); }
   try {
     return await fn(send);
   } finally {
+    if (s) s.busy--;
     armIdle(tabId);
   }
 }

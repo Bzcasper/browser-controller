@@ -4,13 +4,16 @@ import { requireTabId, forwardHandler } from './types.js';
 
 export const evaluateTool: ToolDefinition = {
   name: 'browser_evaluate',
-  summary: 'Run JavaScript in the page MAIN world (CSP-restricted)',
+  summary: 'Run JavaScript in the page (top-level await, last value returned)',
   description:
-    'Execute JavaScript in a tab and return the result. Use for DOM queries, reading page state, or any operation not covered by other tools. NOTE: runs in the page MAIN world via chrome.scripting and is CSP-restricted — on a strict-CSP SPA it may return null even for valid expressions; in that case use browser_run_action (which runs via CDP and bypasses CSP). Prefer browser_click/browser_type over dispatching events by hand here.',
+    'Execute JavaScript in a tab and return the result. Write code as in the DevTools console: top-level `await` works, several statements are fine and the value of the LAST expression is returned (no IIFE / return needed), DOM nodes come back as readable descriptions. Runs over CDP, so page CSP does not block it. mode:"scripting" uses chrome.scripting instead (no debugger banner, CSP-restricted, no top-level await). Prefer browser_click/browser_type over dispatching events by hand here.',
   inputSchema: z.object({
     tabId: requireTabId(),
-    expression: z.string().describe('JavaScript expression or code to evaluate in the page context'),
+    expression: z.string().describe('JavaScript to run, e.g. `const r = await fetch("/api"); (await r.json()).items.length`'),
+    timeout: z.number().int().min(1000).max(120_000).optional().default(30_000).describe('Max ms to wait for the result (awaits included), default 30000'),
+    mode: z.enum(['cdp', 'scripting']).optional().default('cdp').describe('cdp (default) or scripting (banner-free, CSP-bound)'),
   }),
-  timeoutMs: 15_000,
+  // Must exceed the largest `timeout` so the page-side budget decides.
+  timeoutMs: 125_000,
   handler: forwardHandler('browser_evaluate'),
 };

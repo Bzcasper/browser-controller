@@ -6,6 +6,8 @@ import { safeExec, resolveTab, getFallback } from '../lib/page-exec.js';
 import { fallbackByTab, lastSnapshotFingerprints, MAX_RESULT_CHARS, persistSessionState } from '../lib/state.js';
 import { PAGE_FALLBACK_INSTALL } from '../utils/smart-selector.js';
 import { PAGE_LEGACY_REF_INSTALL } from '../utils/legacy-refs.js';
+import { withCdp } from '../lib/cdp-session.js';
+import { cdpEvaluate } from '../lib/cdp-evaluate.js';
 
 export async function handleWait(params, _sessionId, _agentName, signal) {
   const { tabId, selector, state = 'visible', timeout = 10000, delay } = params;
@@ -431,12 +433,27 @@ export async function handleGetPageText(params) {
  * chrome.debugger, so no yellow "is being debugged" banner. Replaces the old
  * CDP Runtime.evaluate path.
  */
-export async function handleEvaluate(params) {
-  const { tabId, expression } = params;
+export async function handleEvaluate(params, _sessionId, _agentName, signal) {
+  const { tabId, expression, mode = 'cdp', timeout } = params;
   await resolveTab(tabId);
   const tab = await chrome.tabs.get(tabId);
   if (/^(chrome|chrome-extension|devtools|edge|about):/i.test(tab.url || '')) {
     throw new Error(`Cannot evaluate on protected page (${tab.url}).`);
+  }
+
+  // Default: REPL semantics over CDP (top-level await, last expression is the
+  // result, not blocked by CSP). mode:"scripting" (or no debugger available)
+  // keeps the banner-free chrome.scripting path below.
+  if (mode !== 'scripting') {
+    let attached = false;
+    try {
+      return await withCdp(tabId, (send) => {
+        attached = true;
+        return cdpEvaluate(send, expression, { timeoutMs: timeout, signal });
+      });
+    } catch (err) {
+      if (attached) throw err; // a real evaluate failure, not "no debugger"
+    }
   }
 
   // TWO stacked bugs found live (production stress audit): (1) the old
@@ -467,7 +484,7 @@ export async function handleEvaluate(params) {
   });
 
   let out = null;
-  const deadline = Date.now() + 5000; // page-side settle budget (tool budget is 15s)
+  const deadline = Date.now() + Math.min(timeout ?? 5000, 120_000); // page-side settle budget
   while (Date.now() < deadline) {
     const read = await chrome.scripting.executeScript({
       target: { tabId },
