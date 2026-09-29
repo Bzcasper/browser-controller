@@ -237,14 +237,17 @@ describe('observe/act concurrency integration', () => {
 });
 
 describe('dispatch registry ↔ MCP tool registry (drift guard)', () => {
+  // Server-local tools never reach the extension: browser_batch runs other
+  // tools' handlers in the MCP process (the meta tool isn't in allTools).
+  const wireTools = allTools.filter((t) => t.name !== 'browser_batch');
+
   it('every registered MCP tool has an extension handler', () => {
-    for (const tool of allTools) {
+    for (const tool of wireTools) {
       expect(dispatchedTools, `${tool.name} has no extension handler`).toContain(tool.name);
     }
   });
 
   it('dispatches exactly the known tool set (no stray handlers)', () => {
-    // 22 wire tools; the meta tool (browser_tools) is server-local by design.
-    expect(dispatchedTools.length).toBe(allTools.length);
+    expect(dispatchedTools.length).toBe(wireTools.length);
   });
 });

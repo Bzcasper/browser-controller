@@ -5,6 +5,7 @@
  */
 import { resolveTab, safeExec } from '../lib/page-exec.js';
 import { MAX_RESULT_CHARS } from '../lib/state.js';
+import { ensureCdp } from '../lib/cdp-session.js';
 
 export async function handleRunAction(params, _sessionId, _agentName, signal) {
   const { tabId, code, actionParams = {} } = params;
@@ -13,8 +14,8 @@ export async function handleRunAction(params, _sessionId, _agentName, signal) {
 
   // run_action stays on CDP (plan decision: CDP-only, can't be scripted —
   // it bypasses page CSP via the debugger protocol, unlike browser_evaluate).
-  await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-  try {
+  const send = await ensureCdp(tab.id);
+  {
     const paramsJson = JSON.stringify(actionParams);
     // Dual mode: accept EITHER a {execute:function()} tool wrapper (legacy
     // skill syntax) OR a plain JS expression/statement (simple usage like
@@ -37,8 +38,7 @@ export async function handleRunAction(params, _sessionId, _agentName, signal) {
       }
     })()`;
 
-    const { result, exceptionDetails } = await chrome.debugger.sendCommand(
-      { tabId: tab.id },
+    const { result, exceptionDetails } = await send(
       'Runtime.evaluate',
       { expression, awaitPromise: true, returnByValue: true },
     );
@@ -64,8 +64,6 @@ export async function handleRunAction(params, _sessionId, _agentName, signal) {
       };
     }
     return { success: true, result: result.value };
-  } finally {
-    try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
   }
 }
 
@@ -101,30 +99,25 @@ export async function handleUploadFile(params) {
   }
 
   // upload_file stays on CDP (DOM.setFileInputFiles is CDP-only).
-  let attached = false;
   let uploaded = false;
   try {
-    await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-    attached = true;
-    await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.enable', {});
-    const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', {});
+    const send = await ensureCdp(tab.id);
+    await send('DOM.enable');
+    const { root } = await send('DOM.getDocument');
 
-    const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
+    const { nodeId } = await send('DOM.querySelector', {
       nodeId: root.nodeId,
       selector: sel,
     });
 
     if (!nodeId) throw new Error(`File input not found with selector: ${sel}`);
 
-    await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', {
+    await send('DOM.setFileInputFiles', {
       files: filePaths,
       nodeId,
     });
     uploaded = true;
   } finally {
-    if (attached) {
-      try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
-    }
     // Fire the events React/Vue file inputs listen for after a successful set,
     // and always remove the short-lived Observation V2 handoff marker.
     try {

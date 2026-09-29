@@ -4,15 +4,19 @@ import { requireTabId, imageResult, jsonError, payloadOf } from './types.js';
 
 export const screenshotTool: ToolDefinition = {
   name: 'browser_screenshot',
-  summary: 'Capture a screenshot of a tab',  description: 'Capture a screenshot of a tab. Note: Chrome screenshots the tab\'s window, so the tab must be the active one in its window; if it is not, the tool activates it first.',
+  summary: 'Capture a screenshot of a tab',
+  description: 'Capture a screenshot of a tab over CDP. Use maxWidth / scale and format:"jpeg" to shrink the image (far fewer tokens); fullPage captures the whole scrollable page. A background tab is shown for a moment and the user\'s tab is switched straight back (Chrome does not paint hidden tabs). The agent\'s blue control frame is never in the picture.',
   inputSchema: z.object({
     tabId: requireTabId(),
     format: z.enum(['png', 'jpeg']).optional().default('png'),
     quality: z.number().min(0).max(100).optional().default(80).describe('JPEG quality (ignored for PNG)'),
+    scale: z.number().min(0.05).max(1).optional().describe('Downscale factor, e.g. 0.5 = half size'),
+    maxWidth: z.number().int().min(100).max(4000).optional().describe('Cap the image width in pixels (keeps aspect ratio), e.g. 1024'),
+    fullPage: z.boolean().optional().default(false).describe('Capture the whole scrollable page, not just the viewport'),
   }),
   // Read-only: safe to retry.
   idempotent: true,
-  timeoutMs: 10_000,
+  timeoutMs: 15_000,
   async handler(bridge, params) {
     let result;
     try {

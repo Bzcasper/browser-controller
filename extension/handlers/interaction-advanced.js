@@ -4,6 +4,8 @@
  * each module stays focused and reviewable.
  */
 import { resolveTab, safeExec } from '../lib/page-exec.js';
+import { withCdp } from '../lib/cdp-session.js';
+import { openShield, releaseShield } from '../lib/trusted-input.js';
 
 export async function handleDialog(params) {
   const { tabId, action = 'accept', promptText } = params;
@@ -12,17 +14,14 @@ export async function handleDialog(params) {
   // An ALREADY-OPEN native dialog freezes the page's JS thread — overrides
   // can't help in that state. CDP handles it out-of-band, so try it first.
   try {
-    await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-    try {
-      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable', {});
-      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
+    return await withCdp(tab.id, async (send) => {
+      await send('Page.enable');
+      await send('Page.handleJavaScriptDialog', {
         accept: action === 'accept',
         promptText: promptText || '',
       });
       return { success: true, handled: 'open-dialog', action };
-    } finally {
-      try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
-    }
+    });
   } catch {
     // No dialog showing (or debugger unavailable) — arm future overrides.
   }
@@ -100,27 +99,25 @@ export async function handleDrag(params) {
     throw new Error('Could not determine drag coordinates. Provide refs/selectors or explicit x,y coordinates.');
   }
 
-  await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-  try {
-    await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', {
+  await openShield(tab.id);
+  return withCdp(tab.id, async (send) => {
+    await send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: sx, y: sy, button: 'left', clickCount: 1,
     });
     for (let i = 1; i <= steps; i++) {
       const progress = i / steps;
-      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', {
+      await send('Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: Math.round(sx + (ex - sx) * progress),
         y: Math.round(sy + (ey - sy) * progress),
         button: 'left',
       });
     }
-    await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', {
+    await send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: ex, y: ey, button: 'left', clickCount: 1,
     });
     return { success: true, from: { x: sx, y: sy }, to: { x: ex, y: ey } };
-  } finally {
-    try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
-  }
+  }).finally(() => releaseShield(tab.id));
 }
 
 export async function handleFillForm(params) {

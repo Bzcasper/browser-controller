@@ -196,7 +196,7 @@ describe('observe/act extension handlers', () => {
     }, 'session-a');
 
     expect(result).toMatchObject({ success: true, ok: true, action: 'upload', files: ['/tmp/resume.pdf'] });
-    expect(debuggerCommands).toEqual(['DOM.enable', 'DOM.getDocument', 'DOM.querySelector', 'DOM.setFileInputFiles']);
+    expect(debuggerCommands.filter((m) => m.startsWith('DOM.'))).toEqual(['DOM.enable', 'DOM.getDocument', 'DOM.querySelector', 'DOM.setFileInputFiles']);
     expect(result.metrics).toMatchObject({ protocolCalls: 8 });
   });
 

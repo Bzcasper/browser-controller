@@ -24,6 +24,7 @@ import { dragTool } from './drag.js';
 import { fillFormTool } from './fill-form.js';
 import { observeTool } from './observe.js';
 import { actTool } from './act.js';
+import { batchTool } from './batch.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -50,6 +51,7 @@ export const allTools: ToolDefinition[] = [
   fillFormTool,
   observeTool,
   actTool,
+  batchTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(
