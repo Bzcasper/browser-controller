@@ -132,7 +132,7 @@ function pageLocate(ref, sel, fb, mode) {
   const resolveFallback = (globalThis.__browserControllerFallbackRuntime || {}).resolveFallback || null;
   if (!el && fb && resolveFallback) { el = resolveFallback(fb); if (el) via = 'fallback'; }
   if (!el && mode === 'active') { el = document.activeElement; via = 'active'; }
-  if (!el) return { success: false, error: 'REF_GONE', _ref: ref };
+  if (!el) return { success: false, error: 'REF_GONE', _ref: ref, url: location.href };
 
   // Agent input pass-through for the lock shield (see overlay.js).
   window.__bcAgentInputUntil = Date.now() + 8000;

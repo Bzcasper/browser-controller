@@ -11,7 +11,12 @@ import { trustedSender, locateTarget, releaseShield, cdpClickAt, cdpKeyPress, cd
 export { handleDialog, handleDrag, handleFillForm } from './interaction-advanced.js';
 
 /** Shared REF_GONE recovery: re-snapshot and hand fresh refs back (no auto-retry). */
-async function refGone(tabId, res, ref) {
+async function refGone(tabId, res, ref, selector) {
+  // A selector that matches nothing is usually the wrong page (navigation,
+  // postback), not a virtualized feed — say which locator failed.
+  if (!(res._ref || ref) && selector) {
+    return { success: false, error: `No element matches selector ${selector} on the current page (${res.url || 'navigated?'}).` };
+  }
   const fresh = await autoReSnapshot(tabId);
   return {
     success: false,
@@ -36,7 +41,7 @@ export async function handleClick(params) {
   const send = await trustedSender(tabId, trusted);
   if (send && BUTTONS.has(button)) {
     const loc = await locateTarget(tabId, { ref, selector, fb });
-    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref);
+    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref, selector);
     if (loc?.success && loc.visible) {
       try {
         await cdpClickAt(send, loc.x, loc.y, { button, clickCount: doubleClick ? 2 : 1 });
@@ -133,7 +138,7 @@ export async function handleClick(params) {
   // Auto-re-snapshot and embed fresh refs so the agent retries in ONE step.
   // We do NOT auto-retry the click: it's non-idempotent and the element that
   // re-appears may be a different post after the scroll shifted the feed.
-  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref);
+  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref, selector);
   return res;
 }
 
@@ -152,7 +157,7 @@ export async function handleType(params) {
   const send = await trustedSender(tabId, trusted);
   if (send) {
     const loc = await locateTarget(tabId, { ref, selector, fb, mode: clear ? 'clear' : 'focus' });
-    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref);
+    if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref, selector);
     if (loc?.success && (loc.focused || loc.visible)) {
       let after;
       try {
@@ -235,7 +240,7 @@ export async function handleType(params) {
 
   // Virtualization recovery (same as click): type target is gone, so
   // auto-re-snapshot and embed fresh refs. No auto-retry (non-idempotent).
-  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref);
+  if (res && res.success === false && res.error === 'REF_GONE') return refGone(tabId, res, ref, selector);
   return res;
 }
 
