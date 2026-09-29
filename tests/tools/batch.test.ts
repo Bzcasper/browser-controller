@@ -78,4 +78,41 @@ describe('browser_batch', () => {
     expect(JSON.stringify(unknown.content)).toMatch(/unknown tool/);
     expect(calls).toHaveLength(0);
   });
+
+  it('output:last returns only the last step (and failures)', async () => {
+    const { host } = fakeHost();
+    const res = await run(host, {
+      tabId: 1,
+      output: 'last',
+      actions: [
+        { tool: 'browser_click', params: { selector: '#a' } },
+        { tool: 'browser_press_key', params: { key: 'Tab' } },
+      ],
+    });
+    const texts = res.content.map((c) => (c.type === 'text' ? c.text : ''));
+    expect(texts[0]).toBe('batch: 2/2 steps ok');
+    expect(texts.some((t) => t.startsWith('[1/2]'))).toBe(false);
+    expect(texts.some((t) => t.startsWith('[2/2] browser_press_key ok'))).toBe(true);
+  });
+
+  it('runs a pure delay locally and retries a rate-limited step', async () => {
+    const calls: string[] = [];
+    let limited = 1;
+    const host: ToolHost = {
+      async callTool(tool) {
+        calls.push(tool);
+        if (tool === 'browser_click' && limited-- > 0) throw new Error('Rate limit exceeded (120 calls/min). Retry in ~0s.');
+        return { success: true };
+      },
+    };
+    const res = await run(host, {
+      tabId: 1,
+      actions: [
+        { tool: 'browser_wait', params: { delay: 10 } },
+        { tool: 'browser_click', params: { selector: '#a' } },
+      ],
+    });
+    expect(res.isError).toBeUndefined();
+    expect(calls).toEqual(['browser_click', 'browser_click']);
+  });
 });
