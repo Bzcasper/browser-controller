@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   allTools,
+  toolManifest,
   toolMap,
   isIdempotent,
   toolTimeoutMs,
@@ -34,7 +35,13 @@ describe("Tool Registry", () => {
     "browser_drag",
     "browser_fill_form",
     "browser_intercept",
+    "browser_observe",
+    "browser_act",
+    "browser_batch",
   ];
+  // Tools that run entirely in the MCP process (they call other tools' handlers)
+  // and therefore never send a wire name of their own.
+  const localTools = new Set(['browser_batch']);
 
   it(`registers every expected tool (${expectedTools.length})`, () => {
     expect(allTools.length).toBe(expectedTools.length);
@@ -78,6 +85,18 @@ describe("Tool Registry", () => {
     }
   });
 
+  it('exports a unified manifest with schema and transport policy', () => {
+    expect(toolManifest).toHaveLength(allTools.length);
+    for (const entry of toolManifest) {
+      const tool = toolMap.get(entry.name);
+      expect(tool, `${entry.name} must exist in toolMap`).toBeTruthy();
+      expect(entry.inputSchema).toMatchObject({ type: 'object' });
+      expect(entry.timeoutMs).toBe(tool?.timeoutMs);
+      expect(entry.idempotent).toBe(tool?.idempotent === true);
+      expect(['read', 'write', 'mixed']).toContain(entry.capability);
+    }
+  });
+
   // --- Wire-name drift guard (audit C1) -------------------------------------
   // The tool's .name MUST equal the wire name it sends to bridge.callTool(),
   // otherwise idempotency-retry lookup silently fails and the extension's
@@ -88,6 +107,7 @@ describe("Tool Registry", () => {
   describe("wire name == .name (no drift)", () => {
     for (const tool of allTools) {
       it(`${tool.name} sends its own wire name`, () => {
+        if (localTools.has(tool.name)) return;
         const tagged = (tool.handler as { toolName?: string }).toolName;
         if (tagged !== undefined) {
           expect(
@@ -114,12 +134,13 @@ describe("Tool Registry", () => {
   // --- Idempotency classification (audit M2) --------------------------------
   // Reads are retry-safe; mutating tools must NOT be. browser_console/network
   // mutate when clear:true, so they are explicitly non-idempotent.
-  describe("idempotency classification", () => {
-    it("marks read-only tools as idempotent", () => {
-      expect(isIdempotent("browser_snapshot")).toBe(true);
-      expect(isIdempotent("browser_screenshot")).toBe(true);
-      expect(isIdempotent("browser_text")).toBe(true);
-      expect(isIdempotent("browser_find")).toBe(true);
+  describe('idempotency classification', () => {
+    it('marks read-only tools as idempotent', () => {
+      expect(isIdempotent('browser_snapshot')).toBe(true);
+      expect(isIdempotent('browser_screenshot')).toBe(true);
+      expect(isIdempotent('browser_text')).toBe(true);
+      expect(isIdempotent('browser_find')).toBe(true);
+      expect(isIdempotent('browser_observe')).toBe(true);
     });
     it("marks clear-able capture tools as NON-idempotent (clear mutates)", () => {
       expect(isIdempotent("browser_console")).toBe(false);
@@ -136,6 +157,7 @@ describe("Tool Registry", () => {
       ]) {
         expect(isIdempotent(t), `${t} must not be retried`).toBe(false);
       }
+      expect(isIdempotent('browser_act')).toBe(false);
     });
   });
 

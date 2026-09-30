@@ -40,6 +40,7 @@ import {
   type IpcClientMessage,
   type IpcDaemonMessage,
 } from './daemon-config.js';
+import { buildIpcWelcome, IPC_PROTOCOL_CAPABILITIES, validateCapabilities, validateProtocolVersion } from './protocol.js';
 import { ExtensionBridge } from './bridge.js';
 
 const SERVER_NAME = 'browser-controller-daemon';
@@ -79,6 +80,7 @@ const HEARTBEAT_MAX_MISSED = envInt('BC_HEARTBEAT_MAX_MISSED', 3);
 const RATE_LIMIT_WINDOW_MS = 60_000;
 // min 0: 0 disables the limiter (documented opt-out for tests / power users).
 const RATE_LIMIT_PER_MIN = envInt('BC_RATE_LIMIT_PER_MIN', 120, 0);
+export const MAX_IPC_LINE_BYTES = envInt('BC_MAX_IPC_LINE_BYTES', 1_000_000, 1024);
 
 class Daemon {
   private bridge: ExtensionBridge;
@@ -191,11 +193,21 @@ class Daemon {
     socket.setKeepAlive(true, 30_000);
     socket.on('data', (chunk: string) => {
       buf += chunk;
+      if (Buffer.byteLength(buf, 'utf8') > MAX_IPC_LINE_BYTES) {
+        safeSend({ kind: 'denied', ok: false, reason: `ipc line too large (max ${MAX_IPC_LINE_BYTES} bytes)` });
+        socket.destroy();
+        return;
+      }
       let nl: number;
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
+        if (Buffer.byteLength(line, 'utf8') > MAX_IPC_LINE_BYTES) {
+          safeSend({ kind: 'denied', ok: false, reason: `ipc line too large (max ${MAX_IPC_LINE_BYTES} bytes)` });
+          socket.destroy();
+          return;
+        }
         let msg: IpcClientMessage;
         try {
           msg = JSON.parse(line);
@@ -212,6 +224,13 @@ class Daemon {
           }
           if (!this.checkToken(msg.token)) {
             safeSend({ kind: 'denied', ok: false, reason: 'invalid token' });
+            socket.destroy();
+            return;
+          }
+          const version = validateProtocolVersion(msg.protocolVersion);
+          const capabilities = validateCapabilities(msg.capabilities, IPC_PROTOCOL_CAPABILITIES);
+          if (!version.ok || !capabilities.ok) {
+            safeSend({ kind: 'denied', ok: false, reason: version.reason || capabilities.reason || 'Unsupported protocol.' });
             socket.destroy();
             return;
           }
@@ -251,7 +270,7 @@ class Daemon {
             rateWindowStart: Date.now(),
           };
           this.clients.set(socket, client);
-          safeSend({ kind: 'welcome', sessionId: client.sessionId, ok: true });
+          safeSend(buildIpcWelcome(client.sessionId));
           console.error(`[${SERVER_NAME}] client connected: ${client.sessionId} (${client.agentName})`);
           return;
         }

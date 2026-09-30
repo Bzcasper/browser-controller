@@ -1,7 +1,7 @@
 {
   "name": "browser-controller",
   "mcpName": "io.github.noiemany/browser-controller",
-  "version": "2.1.1",
+  "version": "2.3.0",
   "description": "MCP server + Chrome extension that gives AI agents control of your real browser with existing sessions and logins",
   "type": "module",
   "bin": {
@@ -17,8 +17,11 @@
     "daemon:restart": "node scripts/daemon.mjs restart",
     "daemon:status": "node scripts/daemon.mjs status",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "smoke:real-chrome": "node scripts/smoke-real-chrome.mjs",
+    "lint": "eslint mcp-server/src tests extension vitest.config.ts eslint.config.js",
+    "security:audit": "npm audit --omit=dev --audit-level=high",
     "typecheck": "tsc -p mcp-server/tsconfig.json --noEmit",
     "setup:cursor": "node agent-config/setup.mjs cursor",
     "setup:claude": "node agent-config/setup.mjs claude",
@@ -69,13 +72,20 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ws": "^8.21.3",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.5.0",
+    "@babel/core": "^8.0.6",
+    "@babel/eslint-parser": "^7.29.9",
+    "@babel/preset-typescript": "^8.0.1",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.2",
     "@types/ws": "^8.5.10",
+    "@vitest/coverage-v8": "^5.0.1",
     "ai-context-kit": "^0.1.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   }
 }

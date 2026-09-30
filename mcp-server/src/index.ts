@@ -52,6 +52,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { buildIpcHello, IPC_PROTOCOL_CAPABILITIES, validateCapabilities, validateProtocolVersion } from './protocol.js';
 import { allTools } from './tools/index.js';
 import { registerTools } from './register-tools.js';
 import {
@@ -138,7 +139,7 @@ class DaemonClient {
     });
 
     // authenticate
-    this.socket.write(JSON.stringify({ kind: 'hello', token: this.token, agentName: this.agentName }) + '\n');
+    this.socket.write(JSON.stringify(buildIpcHello(this.token, this.agentName)) + '\n');
 
     await this.waitForWelcome();
   }
@@ -158,9 +159,22 @@ class DaemonClient {
     });
   }
 
-  private handleMessage(msg: { kind: string; sessionId?: string; id?: string; success?: boolean; result?: unknown; error?: string; reason?: string }): void {
+  private handleMessage(msg: { kind: string; sessionId?: string; id?: string; success?: boolean; result?: unknown; error?: string; reason?: string; protocolVersion?: number; capabilities?: string[] }): void {
     switch (msg.kind) {
       case 'welcome':
+        {
+          const version = validateProtocolVersion(msg.protocolVersion);
+          const capabilities = validateCapabilities(msg.capabilities, IPC_PROTOCOL_CAPABILITIES);
+          if (!version.ok || !capabilities.ok) {
+            const reason = version.reason || capabilities.reason || 'Incompatible daemon protocol.';
+            this.failAll(reason);
+            this.socket?.destroy(new Error(reason));
+            return;
+          }
+          if (version.legacy || capabilities.legacy) {
+            console.error(`[${SERVER_NAME}] connected to legacy daemon protocol; restart the daemon after upgrading.`);
+          }
+        }
         this._sessionId = msg.sessionId ?? null;
         this.connectResolvers.forEach(r => r());
         this.connectResolvers = [];
@@ -266,18 +280,23 @@ class DaemonClient {
  * spawn-kill-restart loop where N concurrent clients each spawned a daemon,
  * hit EADDRINUSE, and SIGTERM'd each other's healthy daemon.
  */
-async function daemonLooksAlive(): Promise<boolean> {
-  // Active probe: try to open+close the IPC socket. A live daemon accepts
-  // immediately; a crashed-but-not-reaped process refuses or hangs. 250ms is
-  // plenty on localhost and far below the spawn-daemon startup cost.
-  const connectProbe = (): Promise<boolean> =>
-    new Promise<boolean>((resolve) => {
-      const s = net.createConnection(IPC_SOCKET_PATH);
-      const t = setTimeout(() => { s.destroy(); resolve(false); }, 250);
-      s.once('connect', () => { clearTimeout(t); s.destroy(); resolve(true); });
-      s.once('error', () => { clearTimeout(t); resolve(false); });
-    });
+/**
+ * Active probe: try to open+close the IPC socket. A live daemon accepts
+ * immediately; a crashed-but-not-reaped process refuses or hangs. 250ms is
+ * plenty on localhost and far below the spawn-daemon startup cost. The
+ * timeout is load-bearing: a socket that neither connects nor errors (hung
+ * backlog) must resolve false, or the caller's retry loop stalls forever.
+ */
+function connectProbe(): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const s = net.createConnection(IPC_SOCKET_PATH);
+    const t = setTimeout(() => { s.destroy(); resolve(false); }, 250);
+    s.once('connect', () => { clearTimeout(t); s.destroy(); resolve(true); });
+    s.once('error', () => { clearTimeout(t); resolve(false); });
+  });
+}
 
+async function daemonLooksAlive(): Promise<boolean> {
   try {
     // Fast-fail when no daemon was ever started here. We check the INFO file
     // (daemon.json), NOT the socket: the IPC socket path can exceed the
@@ -368,11 +387,9 @@ async function waitForDaemon(): Promise<void> {
     // socket path can exceed the kernel's AF_UNIX sun_path limit on macOS
     // (104 bytes), truncating the on-disk name so existsSync never sees it —
     // while createConnection still succeeds (both sides truncate identically).
-    const ok = await new Promise<boolean>((resolve) => {
-      const s = net.createConnection(IPC_SOCKET_PATH);
-      s.once('connect', () => { s.destroy(); resolve(true); });
-      s.once('error', () => resolve(false));
-    });
+    // connectProbe bounds each attempt at 250ms so a hung socket (no connect,
+    // no error) can't stall this retry loop forever.
+    const ok = await connectProbe();
     if (ok) return;
     await new Promise(r => setTimeout(r, CONNECT_RETRY_MS));
   }

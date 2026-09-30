@@ -15,10 +15,87 @@ import {
 import { showLockShield, hideLockShield } from "../lib/overlay.js";
 import { broadcastStatus } from "../lib/connection.js";
 import { lockTabUi, releaseTabUi } from "../lib/lock-ops.js";
+import { withCdp, ensureViewport } from '../lib/cdp-session.js';
+
+const CDP_CAPTURE_TIMEOUT_MS = 4000;
+
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * CDP capture (Page.captureScreenshot): works on a tab that is NOT the active
+ * one in its window, so the user's view is never switched, and can downscale
+ * (`scale`) or cap the width (`maxWidth`) to save image tokens.
+ */
+async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage }) {
+  return withCdp(tabId, async (send) => {
+    let metrics = await send('Page.getLayoutMetrics');
+    if (!(metrics?.cssVisualViewport?.clientWidth > 0)) {
+      await ensureViewport(tabId);
+      metrics = await send('Page.getLayoutMetrics');
+    }
+    const vv = metrics.cssVisualViewport;
+    const content = metrics.cssContentSize || metrics.contentSize;
+    const width = fullPage ? Math.ceil(content.width) : vv.clientWidth;
+    const height = fullPage ? Math.min(Math.ceil(content.height), 16_000) : vv.clientHeight;
+    let s = Math.min(1, Math.max(0.05, scale ?? 1));
+    if (maxWidth && width * s > maxWidth) s = maxWidth / width;
+    const { data } = await withTimeout(send('Page.captureScreenshot', {
+      format,
+      ...(format === 'jpeg' ? { quality } : {}),
+      captureBeyondViewport: !!fullPage,
+      clip: { x: fullPage ? 0 : vv.pageX, y: fullPage ? 0 : vv.pageY, width, height, scale: s },
+    }), CDP_CAPTURE_TIMEOUT_MS, 'Page.captureScreenshot');
+    return { data, width: Math.round(width * s), height: Math.round(height * s) };
+  });
+}
 
 export async function handleScreenshot(params) {
-  const { tabId, format = "png", quality = 80 } = params;
+  const { tabId, format = "png", quality = 80, scale, maxWidth, fullPage = false } = params;
   const tab = await resolveTab(tabId);
+  const protectedPage = /^(chrome|chrome-extension|devtools|edge|about):/i.test(tab.url || '');
+  let cdpError = null;
+  if (!protectedPage) {
+    // The shield is shown during EVERY agent action (router), not only while
+    // locked — always take it out of the picture; the router restores it.
+    const wasLocked = !!tabLocks.owner(tabId);
+    await hideLockShield(tabId);
+    const opts = { format, quality, scale, maxWidth, fullPage };
+    const done = (shot, via) => ({ success: true, format, via, width: shot.width, height: shot.height, data: shot.data });
+    try {
+      if (tab.active) {
+        const shot = await cdpScreenshot(tabId, opts);
+        if (shot?.data) return done(shot, 'cdp');
+      } else {
+        // A background tab produces no compositor frames (Page.captureScreenshot
+        // just hangs, fromSurface:false too), so show it for a moment, capture
+        // over CDP (keeps scale/maxWidth/fullPage) and switch straight back.
+        const fg = await windowCaptureMutex.run(tab.windowId, async () => {
+          const [previousActive] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+          await chrome.tabs.update(tabId, { active: true });
+          try {
+            await new Promise((r) => setTimeout(r, 150));
+            return await cdpScreenshot(tabId, opts);
+          } finally {
+            if (previousActive?.id != null && previousActive.id !== tabId) {
+              await chrome.tabs.update(previousActive.id, { active: true }).catch(() => {});
+            }
+          }
+        });
+        if (fg?.data) return done(fg, 'cdp-activated');
+      }
+    } catch (err) {
+      // debugger unavailable or the hidden tab would not paint: fall back below
+      cdpError = String(err?.message || err).slice(0, 200);
+    } finally {
+      if (wasLocked) await showLockShield(tabId);
+    }
+  }
   return windowCaptureMutex.run(tab.windowId, async () => {
     const [previousActive] = await chrome.tabs.query({
       active: true,
@@ -37,7 +114,7 @@ export async function handleScreenshot(params) {
         format,
         quality: format === "jpeg" ? quality : undefined,
       });
-      return { success: true, format, data: dataUrl.split(",")[1] };
+      return { success: true, format, data: dataUrl.split(",")[1], ...(cdpError ? { cdpFallback: cdpError } : {}) };
     } finally {
       if (wasLocked) await showLockShield(tabId);
       if (changedActiveTab && previousActive?.id != null) {
@@ -122,12 +199,11 @@ export async function handleTabs(params, sessionId) {
     case "close": {
       if (!tabId) throw new Error("tabId required");
       // A locked tab belongs to its owner session — closing it from another
-      // session would destroy the work the lock exists to protect.
+      // session (or from an anonymous no-session caller) would destroy the
+      // work the lock exists to protect.
       const closerOwner = tabLocks.owner(tabId);
-      if (closerOwner && sessionId && closerOwner !== sessionId) {
-        throw new Error(
-          `Tab ${tabId} is locked by ${closerOwner} — unlock it from that session before closing.`,
-        );
+      if (closerOwner && closerOwner !== sessionId) {
+        throw new Error(`Tab ${tabId} is locked by ${closerOwner} — unlock it from that session before closing.`);
       }
       await chrome.tabs.remove(tabId);
       releaseTabUi(tabId); // release + persist + shield removal
@@ -136,10 +212,8 @@ export async function handleTabs(params, sessionId) {
     case "focus": {
       if (!tabId) throw new Error("tabId required");
       const focusOwner = tabLocks.owner(tabId);
-      if (focusOwner && sessionId && focusOwner !== sessionId) {
-        throw new Error(
-          `Tab ${tabId} is locked by ${focusOwner} — unlock it from that session before focusing.`,
-        );
+      if (focusOwner && focusOwner !== sessionId) {
+        throw new Error(`Tab ${tabId} is locked by ${focusOwner} — unlock it from that session before focusing.`);
       }
       await chrome.tabs.update(tabId, { active: true });
       return { success: true, focused: tabId };

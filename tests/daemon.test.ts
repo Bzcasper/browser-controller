@@ -189,6 +189,23 @@ describe('daemon client lifecycle', { timeout: 30_000 }, () => {
     socket.destroy();
   });
 
+  it('rejects oversized IPC lines before parsing or routing them', async () => {
+    const { socket } = await connectClient('TooLarge');
+    const closed = new Promise<boolean>((resolve) => {
+      socket.once('close', () => resolve(true));
+      setTimeout(() => resolve(false), 1500);
+    });
+
+    socket.write(JSON.stringify({
+      kind: 'call',
+      id: 'too-large',
+      tool: 'browser_snapshot',
+      params: { padding: 'x'.repeat(1_100_000) },
+    }) + '\n');
+
+    await expect(closed).resolves.toBe(true);
+  });
+
   it('replaces a DEAD client (missed pongs) when a new one with the same name connects', async () => {
     // First client deliberately ignores pings → its missedPongs climbs toward
     // HEARTBEAT_MAX_MISSED. We wait long enough for it to be flagged dead, then
@@ -299,6 +316,21 @@ describe('daemon client lifecycle', { timeout: 30_000 }, () => {
         socket.write(JSON.stringify({ kind: 'hello', token: 'wrong-token', agentName: 'Bad' }) + '\n');
       })
     ).resolves.toBeUndefined();
+  });
+
+  it('disconnects an IPC client that exceeds the max line size before newline', async () => {
+    const client = await connectClient('HugeLine');
+    const closed = new Promise<boolean>((resolve) => {
+      client.socket.on('close', () => resolve(true));
+      setTimeout(() => resolve(false), 2500);
+    });
+    client.socket.write(
+      JSON.stringify({ kind: 'call', id: 'huge', tool: 'browser_snapshot', params: { prefix: '' } }).slice(0, -3)
+        + 'x'.repeat(1_100_000),
+    );
+    const didClose = await closed;
+    if (!didClose) client.socket.destroy();
+    expect(didClose).toBe(true);
   });
 });
 

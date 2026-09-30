@@ -7,6 +7,7 @@
  */
 import { tabLocks, loadSessionState } from './state.js';
 import { showLockShield, hideLockShield } from './overlay.js';
+import { buildExtensionHelloAck, validateDaemonHello } from './protocol.js';
 
 const DEFAULT_WS_PORT = 7225;
 const RECONNECT_BASE_MS = 1000;
@@ -35,6 +36,8 @@ let nextRetryMs = 0;
 let connectedSince = null;
 let lastError = null;
 let currentActivity = null; // tool currently running (single overlay label source)
+let handshakeTimeout = null;
+const HANDSHAKE_GRACE_MS = 250;
 
 /** The router's handleMessage — injected by background.js at wiring time. */
 let messageHandler = null;
@@ -182,12 +185,20 @@ export async function connect() {
     socket.onopen = () => {
       if (ws !== socket) return;
       opened = true;
-      connected = true;
-      reconnectAttempts = 0;
-      connectedSince = Date.now();
+      connected = false;
       lastError = null;
-      updateBadge('connected');
-      broadcastStatus('Connected');
+      updateBadge('disconnected');
+      broadcastStatus('Connected transport; negotiating protocol');
+      clearTimeout(handshakeTimeout);
+      // Compatibility window for a daemon from before the versioned hello.
+      handshakeTimeout = setTimeout(() => {
+        if (ws !== socket || socket.readyState !== WebSocket.OPEN || connected) return;
+        connected = true;
+        reconnectAttempts = 0;
+        connectedSince = Date.now();
+        updateBadge('connected');
+        broadcastStatus('Connected (legacy protocol; restart daemon after upgrading)');
+      }, HANDSHAKE_GRACE_MS);
     };
 
     socket.onclose = () => {
@@ -195,6 +206,8 @@ export async function connect() {
       // closed before open = the daemon destroyed the upgrade (bad/no token)
       if (!opened) lastWasHandshakeClose = true;
       connected = false;
+      clearTimeout(handshakeTimeout);
+      handshakeTimeout = null;
       connectedSince = null;
       ws = null;
       // Grey badge (not red) — a dropped/reconnecting socket is a normal state,
@@ -227,6 +240,28 @@ export async function connect() {
       try {
         const msg = JSON.parse(event.data);
         msgId = msg.id ?? null;
+        if (msg.type === 'hello') {
+          const compatibility = validateDaemonHello(msg);
+          if (!compatibility.ok) {
+            clearTimeout(handshakeTimeout);
+            lastError = compatibility.reason || 'Incompatible daemon protocol';
+            connected = false;
+            updateBadge('error');
+            broadcastStatus(lastError);
+            socket.close(1002, 'incompatible protocol');
+            return;
+          }
+          socket.send(JSON.stringify(buildExtensionHelloAck(chrome.runtime.getManifest().version)));
+          clearTimeout(handshakeTimeout);
+          handshakeTimeout = null;
+          connected = true;
+          reconnectAttempts = 0;
+          connectedSince = Date.now();
+          lastError = null;
+          updateBadge('connected');
+          broadcastStatus(compatibility.legacy ? 'Connected (legacy protocol)' : 'Connected');
+          return;
+        }
         if (msg.type === 'ping') {
           socket.send(JSON.stringify({ type: 'pong' }));
           return;

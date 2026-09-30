@@ -2,9 +2,12 @@
  * Inspection handlers (extracted from background.js): wait, scroll, snapshot,
  * find, text, evaluate — the read side of the toolset.
  */
-import { safeExec, resolveTab } from '../lib/page-exec.js';
+import { safeExec, resolveTab, getFallback } from '../lib/page-exec.js';
 import { fallbackByTab, lastSnapshotFingerprints, MAX_RESULT_CHARS, persistSessionState } from '../lib/state.js';
-import { PAGE_FALLBACK_FN } from '../utils/smart-selector.js';
+import { PAGE_FALLBACK_INSTALL } from '../utils/smart-selector.js';
+import { PAGE_LEGACY_REF_INSTALL } from '../utils/legacy-refs.js';
+import { withCdp } from '../lib/cdp-session.js';
+import { cdpEvaluate } from '../lib/cdp-evaluate.js';
 
 export async function handleWait(params, _sessionId, _agentName, signal) {
   const { tabId, selector, state = 'visible', timeout = 10000, delay } = params;
@@ -55,10 +58,18 @@ export async function handleWait(params, _sessionId, _agentName, signal) {
 export async function handleScroll(params) {
   const { tabId, direction = 'down', amount = 500, selector, toElement, position } = params;
   await resolveTab(tabId);
+  const fb = getFallback(tabId, toElement);
+  if (fb) await safeExec(tabId, PAGE_FALLBACK_INSTALL, []);
+  await safeExec(tabId, PAGE_LEGACY_REF_INSTALL, []);
 
-  return safeExec(tabId, (_dir, _amt, _sel, _toEl, _pos) => {
+  return safeExec(tabId, (_dir, _amt, _sel, _toEl, _pos, _fb) => {
     if (_toEl) {
-      const el = document.querySelector(`[data-mcp-ref="${_toEl}"]`) || document.querySelector(_toEl);
+      const resolveFallback = (globalThis.__browserControllerFallbackRuntime || {}).resolveFallback || null;
+      const resolveRef = (globalThis.__browserControllerLegacyRefRuntime || {}).resolveRef || null;
+      const el = (resolveRef ? resolveRef(_toEl) : null) ||
+        document.querySelector(`[data-mcp-ref="${_toEl}"]`) ||
+        document.querySelector(_toEl) ||
+        (_fb && resolveFallback ? resolveFallback(_fb) : null);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return { success: true, scrolledTo: 'element' };
@@ -90,7 +101,7 @@ export async function handleScroll(params) {
     else target.scrollBy(scrollOpts);
 
     return { success: true, direction: _dir, amount: _amt };
-  }, [direction, amount, selector, toElement, position]).then((res) => {
+  }, [direction, amount, selector, toElement, position, fb]).then((res) => {
     // Scrolling a virtualized feed (FB/IG/Twitter) recycles DOM nodes, so any
     // refs the agent holds are now likely stale. Hint it to re-snapshot. We
     // don't auto-snapshot here (every scroll would be expensive); the hint is
@@ -102,32 +113,36 @@ export async function handleScroll(params) {
 
 /**
  * Snapshot (task 2.4): builds an accessibility tree INCLUDING shadow DOM and
- * same-origin iframes. Refs are stamped via data-mcp-ref and are valid only for
- * the tab that produced them (enforced by resolveTab in the consuming tools).
+ * same-origin iframes. Refs are returned to the agent, while element recovery
+ * state is stored in the extension fallback registry instead of mutating page
+ * DOM with permanent data-mcp-ref attributes.
  */
 export async function handleSnapshot(params) {
   const { tabId, selector, compact = true } = params;
   await resolveTab(tabId);
 
-  // chrome.scripting cannot serialize functions across the service worker
-  // boundary, so pass the fallback generator as its SOURCE STRING and eval it
-  // in the page to rebuild the live function.
-  const genFallbackSrc = PAGE_FALLBACK_FN.toString();
+  // Install the fallback page runtime first (v2 install-once pattern): the
+  // generator's source is injected natively as a chrome.scripting `func:`.
+  // Rebuilding it from a source string via eval() is impossible — MV3's
+  // extension CSP (script-src 'self', no unsafe-eval) throws in every
+  // isolated world, which silently killed fallback capture before this fix.
+  await safeExec(tabId, PAGE_FALLBACK_INSTALL, []);
+  await safeExec(tabId, PAGE_LEGACY_REF_INSTALL, []);
   // isNew feature: pass the fingerprints seen in the PREVIOUS snapshot so the
   // page function can mark newly-appeared elements. Array is serializable.
   const prevFingerprints = lastSnapshotFingerprints.get(tabId) || [];
   const refPrefix = `e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-`;
 
-  return safeExec(tabId, (_sel, _compact, genFallbackSrc, _prevFingerprints, _refPrefix) => {
+  return safeExec(tabId, (_sel, _compact, _prevFingerprints, _refPrefix) => {
     let refCount = 0;
     /** @type {Record<string, object>} ref -> fallback, returned to background */
     const fallbacks = {};
     /** @type {string[]} fingerprints of THIS snapshot (role|name), returned to background */
     const fingerprints = [];
     const prevSet = new Set(_prevFingerprints);
-    // Rebuild the live function from its source string (see comment at call site).
-    let genFallback = null;
-    try { genFallback = eval('(' + genFallbackSrc + ')'); } catch {}
+    // Descriptor generator comes from the pre-installed page runtime.
+    const genFallback = (globalThis.__browserControllerFallbackRuntime || {}).generateFallback || null;
+    const registerRef = (globalThis.__browserControllerLegacyRefRuntime || {}).registerRef || null;
     const skipTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'PATH', 'BR', 'HR', 'WBR', 'META', 'LINK']);
 
     function vis(el) {
@@ -216,7 +231,7 @@ export async function handleSnapshot(params) {
       }
 
       const ref = `${_refPrefix}${refCount++}`;
-      el.setAttribute('data-mcp-ref', ref);
+      if (registerRef) registerRef(ref, el);
       const n = elName(el);
       try { if (genFallback) fallbacks[ref] = genFallback(el); } catch {}
 
@@ -256,7 +271,7 @@ export async function handleSnapshot(params) {
       }
 
       const ref = `${_refPrefix}${refCount++}`;
-      el.setAttribute('data-mcp-ref', ref);
+      if (registerRef) registerRef(ref, el);
       try { if (genFallback) fallbacks[ref] = genFallback(el); } catch {}
 
       // isNew: mark elements whose (role|name) wasn't in the previous snapshot.
@@ -297,7 +312,7 @@ export async function handleSnapshot(params) {
       __fallbacks: fallbacks,
       __fingerprints: fingerprints,
     };
-  }, [selector, compact, genFallbackSrc, prevFingerprints, refPrefix]).then((res) => {
+  }, [selector, compact, prevFingerprints, refPrefix]).then((res) => {
     // Store the fallbacks per-tab so click/type can resolve stale refs, and
     // persist them across service-worker recycles (MV3 lifetime).
     if (res && res.__fallbacks) {
@@ -318,11 +333,16 @@ export async function handleSnapshot(params) {
 export async function handleFind(params) {
   const { tabId, query, limit = 10 } = params;
   await resolveTab(tabId);
+  await safeExec(tabId, PAGE_FALLBACK_INSTALL, []);
+  await safeExec(tabId, PAGE_LEGACY_REF_INSTALL, []);
   const refPrefix = `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-`;
 
   return safeExec(tabId, (_q, _lim, _refPrefix) => {
     const qLow = _q.toLowerCase();
     const matches = [];
+    const fallbacks = {};
+    const genFallback = (globalThis.__browserControllerFallbackRuntime || {}).generateFallback || null;
+    const registerRef = (globalThis.__browserControllerLegacyRefRuntime || {}).registerRef || null;
 
     function aName(el) {
       return (el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') ||
@@ -364,7 +384,8 @@ export async function handleFind(params) {
       if (score === 0) continue;
 
       const ref = `${_refPrefix}${rc++}`;
-      node.setAttribute('data-mcp-ref', ref);
+      if (registerRef) registerRef(ref, node);
+      try { if (genFallback) fallbacks[ref] = genFallback(node); } catch {}
       matches.push({
         ref, role: r, name: n.slice(0, 100), tag: node.tagName.toLowerCase(), score,
         bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
@@ -373,8 +394,17 @@ export async function handleFind(params) {
     }
 
     matches.sort((a, b) => b.score - a.score);
-    return { success: true, query: _q, matches: matches.slice(0, _lim) };
-  }, [query, limit, refPrefix]);
+    return { success: true, query: _q, matches: matches.slice(0, _lim), __fallbacks: fallbacks };
+  }, [query, limit, refPrefix]).then((res) => {
+    if (res && res.__fallbacks) {
+      const map = fallbackByTab.get(tabId) || new Map();
+      for (const [ref, fbEntry] of Object.entries(res.__fallbacks)) map.set(ref, fbEntry);
+      fallbackByTab.set(tabId, map);
+      delete res.__fallbacks;
+      persistSessionState();
+    }
+    return res;
+  });
 }
 
 export async function handleGetPageText(params) {
@@ -403,12 +433,27 @@ export async function handleGetPageText(params) {
  * chrome.debugger, so no yellow "is being debugged" banner. Replaces the old
  * CDP Runtime.evaluate path.
  */
-export async function handleEvaluate(params) {
-  const { tabId, expression } = params;
+export async function handleEvaluate(params, _sessionId, _agentName, signal) {
+  const { tabId, expression, mode = 'cdp', timeout } = params;
   await resolveTab(tabId);
   const tab = await chrome.tabs.get(tabId);
   if (/^(chrome|chrome-extension|devtools|edge|about):/i.test(tab.url || '')) {
     throw new Error(`Cannot evaluate on protected page (${tab.url}).`);
+  }
+
+  // Default: REPL semantics over CDP (top-level await, last expression is the
+  // result, not blocked by CSP). mode:"scripting" (or no debugger available)
+  // keeps the banner-free chrome.scripting path below.
+  if (mode !== 'scripting') {
+    let attached = false;
+    try {
+      return await withCdp(tabId, (send) => {
+        attached = true;
+        return cdpEvaluate(send, expression, { timeoutMs: timeout, signal });
+      });
+    } catch (err) {
+      if (attached) throw err; // a real evaluate failure, not "no debugger"
+    }
   }
 
   // TWO stacked bugs found live (production stress audit): (1) the old
@@ -439,7 +484,7 @@ export async function handleEvaluate(params) {
   });
 
   let out = null;
-  const deadline = Date.now() + 5000; // page-side settle budget (tool budget is 15s)
+  const deadline = Date.now() + Math.min(timeout ?? 5000, 120_000); // page-side settle budget
   while (Date.now() < deadline) {
     const read = await chrome.scripting.executeScript({
       target: { tabId },

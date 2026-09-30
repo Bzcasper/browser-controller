@@ -19,7 +19,8 @@ export async function getActiveTab() {
 }
 
 export async function handleNavigate(params, _sessionId, _agentName, signal) {
-  const { url, waitUntil = 'load', tabId, snapshot: wantSnapshot = true } = params;
+  let { url } = params;
+  const { waitUntil = 'load', tabId, snapshot: wantSnapshot = true } = params;
   // navigate is the one page tool allowed to omit tabId → active tab fallback.
   const tab = tabId != null ? await resolveTab(tabId) : await getActiveTab();
 
@@ -27,8 +28,15 @@ export async function handleNavigate(params, _sessionId, _agentName, signal) {
   // so `chrome.tabs.onUpdated` never fires `status === 'complete'` and the wait
   // below would hang for the full 55s timeout. Detect this case and skip the
   // wait entirely — the SPA router updates client-side near-instantly.
+  // "back"/"forward" walk the tab's history instead of being treated as a
+  // relative URL (which used to land on chrome-extension://<id>/back).
+  const historyStep = url === 'back' || url === 'forward' ? url : null;
+  const go = () => historyStep === 'back' ? chrome.tabs.goBack(tab.id)
+    : historyStep === 'forward' ? chrome.tabs.goForward(tab.id)
+    : chrome.tabs.update(tab.id, { url });
+
   const currentTab = await chrome.tabs.get(tab.id);
-  const hashOnly = isHashOnlyChange(currentTab.url, url);
+  const hashOnly = !historyStep && isHashOnlyChange(currentTab.url, url);
 
   // A promise that rejects when this call is cancelled (client gone / timeout
   // forwarded from the bridge). Handlers that await long-running operations
@@ -84,7 +92,7 @@ export async function handleNavigate(params, _sessionId, _agentName, signal) {
       };
       chrome.tabs.onUpdated.addListener(listener);
       if (wantDcl) pollTimer = setInterval(probeReady, 150);
-      chrome.tabs.update(tab.id, { url }).catch((err) => {
+      go().catch((err) => {
         chrome.tabs.onUpdated.removeListener(listener);
         if (pollTimer) clearInterval(pollTimer);
         reject(err);
@@ -111,6 +119,9 @@ export async function handleNavigate(params, _sessionId, _agentName, signal) {
   // Return the snapshot inline ONLY if the caller asked for it (default true).
   // Skipping it (snapshot:false) saves a large chunk of tokens when the agent
   // intends to call browser_snapshot itself or doesn't need the tree yet.
+  // For back/forward report where we actually landed, not the keyword.
+  if (historyStep) url = (await chrome.tabs.get(tab.id)).url;
+
   if (!wantSnapshot) {
     return { url, status: 'navigated', tabId: tab.id };
   }

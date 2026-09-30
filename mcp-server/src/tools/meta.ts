@@ -6,7 +6,7 @@ import { allTools, toolMap } from "./index.js";
 /**
  * Progressive disclosure meta tool (Anthropic "Code Execution with MCP" pattern).
  *
- * Instead of loading all 22 tool definitions into the agent's context upfront
+ * Instead of loading all 24 tool definitions into the agent's context upfront
  * (~4200 tokens), only `browser_tools` is registered as visible. The agent uses
  * it to discover, search, and activate other tools on demand:
  *
@@ -43,12 +43,14 @@ export interface MetaToolDeps {
  * summary already does that).
  */
 const TASK_PREAMBLE =
-  "Task → tool:\n" +
-  "• Click / type / fill a form → browser_click / browser_type / browser_fill_form (SPA-aware full events, no debugger banner). Prefer these over raw JS — they handle React/Vue controlled inputs and smart-selector fallback.\n" +
-  "• Read visible text → browser_text (cheapest). Page structure / element refs → browser_snapshot. Screenshot → browser_screenshot (cannot be done via JS).\n" +
-  "• Read/write DOM OR call an internal API (fetch) OR read cookies on a strict-CSP SPA → browser_run_action (runs via CDP, bypasses CSP, returns real values; shows a yellow debugger banner).\n" +
-  "• browser_evaluate is the CSP-bound, banner-free lighter sibling of run_action. Use it only when you must avoid the debugger banner AND the page allows the script. If browser_evaluate returns null, fall back to browser_run_action.\n" +
-  "• Navigate (incl. hash routes) → browser_navigate. Manage tabs → browser_tabs. Wait for something → browser_wait.";
+  'Task → tool:\n' +
+  '• Click / type / keys → browser_click / browser_type / browser_press_key (real trusted input over CDP, works in background windows; trusted:false = synthetic, no debugger banner). Fill a form → browser_fill_form. Prefer these over raw JS.\n' +
+  '• Several known steps → browser_batch (one call, stops at the first error).\n' +
+  '• Read visible text → browser_text (cheapest). Page structure / element refs → browser_snapshot. Screenshot → browser_screenshot (cannot be done via JS).\n' +
+  '• Safe Observe → Act loop → browser_observe, then browser_act with its snapshotId/ref. This adds freshness, geometry, allowed-action, and click-occlusion checks.\n' +
+  '• Read/write DOM OR call an internal API (fetch) OR read cookies on a strict-CSP SPA → browser_run_action (runs via CDP, bypasses CSP, returns real values; shows a yellow debugger banner).\n' +
+  '• browser_evaluate is the CSP-bound, banner-free lighter sibling of run_action. Use it only when you must avoid the debugger banner AND the page allows the script. If browser_evaluate returns null, fall back to browser_run_action.\n' +
+  '• Navigate (incl. hash routes) → browser_navigate. Manage tabs → browser_tabs. Wait for something → browser_wait.';
 
 /**
  * Per-tool "use this when… / not for…" guidance, returned alongside each tool
@@ -59,9 +61,11 @@ const TASK_PREAMBLE =
  */
 const TOOL_GUIDANCE: Record<string, string> = {
   browser_click:
-    "Use for ANY click — it dispatches full mouse events and has a smart-selector fallback. Prefer over JS .click().",
+    'Use for ANY click — a real (trusted) mouse click over CDP with a smart-selector fallback; works in background windows. Prefer over JS .click().',
   browser_type:
-    "Use for typing into inputs — sets the value with the native setter + input/change events so React/Vue controlled inputs update. Prefer over JS .value= .",
+    'Use for typing into inputs — real key presses over CDP, so autocomplete/lookup widgets react like for a user. change/blur fire when focus leaves: follow with browser_press_key Tab. Prefer over JS .value= .',
+  browser_batch:
+    'Use to run several known steps (click → type → Tab → wait → text) in ONE call. Stops at the first failing step. Biggest round-trip saver.',
   browser_fill_form:
     "Use to fill several fields in one call (and optionally submit). Cheaper than repeated browser_type calls.",
   browser_click_text:
@@ -100,9 +104,13 @@ const TOOL_GUIDANCE: Record<string, string> = {
   browser_drag:
     "Use for drag-and-drop (ref/selector or x/y coords). Uses CDP mouse events for reliability.",
   browser_handle_dialog:
-    "Use to handle or dismiss a JS dialog (alert/confirm/prompt) that blocks the page.",
+    'Use to handle or dismiss a JS dialog (alert/confirm/prompt) that blocks the page.',
   browser_intercept:
     "Use to block/redirect/mock network traffic per tab (rules by URL regex) or export a redacted HAR. Check the enforcement flag — capture-only means rules are ledger-marked, not applied.",
+  browser_observe:
+    'Use as the primary AI-facing page read before browser_act. It returns compact, session-owned refs with allowed actions and geometry.',
+  browser_act:
+    'Use with browser_observe output when acting safely matters. It rejects stale, hidden, disabled, semantically invalid, or occluded targets.',
 };
 
 export function createMetaTool(deps: MetaToolDeps): ToolDefinition {

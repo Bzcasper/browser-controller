@@ -1,136 +1,33 @@
 import http from 'node:http';
-import crypto from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { isIdempotent, toolTimeoutMs } from './tools/index.js';
+import { APP_VERSION } from './daemon-config.js';
+import {
+  buildExtensionHello,
+  validateCapabilities,
+  validateProtocolVersion,
+} from './protocol.js';
+import {
+  AUTH_PROTOCOL_PREFIX,
+  corsHeaders,
+  extractToken,
+  isAllowedOrigin,
+  isDaemonResponsiveOnPort,
+  tokensMatch,
+} from './bridge-security.js';
 
-/**
- * Signature of an HTTP request handler the daemon can register so it can serve
- * `/pair` (token bootstrap) and `/status` (connected agents) on the SAME port
- * as the WebSocket. Returning a value serializes it as JSON; returning
- * undefined answers 404 Not found (the daemon does this for unknown paths —
- * previously the response was left open and the client hung until its own
- * timeout).
- */
+export { isDaemonResponsiveOnPort } from './bridge-security.js';
+
+/** Handler for daemon-owned HTTP endpoints served on the bridge port. */
 export type HttpRequestHandler = (
   req: http.IncomingMessage,
   url: URL,
 ) => unknown | void | Promise<unknown | void>;
 
-/**
- * CORS headers for the daemon's HTTP endpoints (/pair, /status, /kill).
- *
- * These endpoints are ONLY for the extension popup (origin
- * `chrome-extension://<id>`). The previous `Access-Control-Allow-Origin: '*'`
- * let ANY web page open in the browser fetch `/pair` and read the auth token,
- * or `/kill` to disconnect agents — because the browser happily served a
- * `*`-CORS response to any origin. We now reflect the requesting origin ONLY
- * when it is a chrome-extension origin; for any other origin we emit no
- * `Access-Control-Allow-Origin` header, so the browser blocks the caller from
- * reading the body (defense in depth on top of the Origin reject in the
- * handler below).
- */
-const ALLOWED_METHODS = 'GET, OPTIONS';
-const EXT_ORIGIN_PREFIX = 'chrome-extension://';
-function corsHeaders(req: http.IncomingMessage, pinnedOrigin: string | null): http.OutgoingHttpHeaders {
-  const origin = req.headers.origin;
-  if (typeof origin === 'string' && origin === pinnedOrigin) {
-    return {
-      'Access-Control-Allow-Origin': origin,
-      'Access-Control-Allow-Methods': ALLOWED_METHODS,
-      'Access-Control-Allow-Headers': 'Content-Type',
-      Vary: 'Origin',
-    };
-  }
-  // No ACAO header → browser blocks cross-origin reads. (Preflight OPTIONS for
-  // a non-extension origin also lands here and is rejected by the handler.)
-  return {
-    'Access-Control-Allow-Methods': ALLOWED_METHODS,
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
-}
-
-/**
- * Decide whether a request's Origin is permitted to reach the HTTP endpoints.
- *
- * Two cases pass:
- *   - no Origin header (local scripts / curl / the test suite — browsers always
- *     set Origin on cross-origin fetches, so a web page can't hide its origin),
- *   - an extension Origin: the FIRST extension origin we ever see is "pinned"
- *     (TOFU); every later extension Origin must match it EXACTLY. This closes
- *     the residual "another malicious extension on the same machine" gap that a
- *     substring check (`startsWith('chrome-extension://')`) leaves open — a
- *     co-installed hostile extension carries its OWN chrome-extension://<id>
- *     Origin (browsers will not let it spoof ours), so a strict equality check
- *     rejects it.
- *
- * The daemon has no compile-time way to know the extension ID: unpacked loads
- * get a random ID, and only the Web Store-published build gets a stable one
- * (manifest has no `key`). So we learn the ID on first contact and keep it for
- * the daemon's lifetime (re-learned on restart / reinstall — the popup always
- * sends its real ID, and a browser-asserted Origin can't be forged by JS).
- */
-function isAllowedOrigin(req: http.IncomingMessage, pinnedOrigin: string | null): { ok: boolean; origin: string | null } {
-  const origin = req.headers.origin;
-  if (!origin) return { ok: true, origin: null };
-  if (typeof origin !== 'string' || !origin.startsWith(EXT_ORIGIN_PREFIX)) {
-    return { ok: false, origin: null };
-  }
-  return { ok: !pinnedOrigin || origin === pinnedOrigin, origin };
-}
-
-/**
- * Subprotocol prefix the extension uses to carry the auth token out of the URL
- * query string (which leaks into access logs / browser history). The extension
- * sends `Sec-WebSocket-Protocol: bc-auth.<token>`; the daemon extracts the
- * token from there. The bare prefix `bc-auth` (no token) is echoed back so the
- * browser-side `new WebSocket(url, [subprotocol])` completes the handshake
- * without leaking anything to the page.
- *
- * `?token=` remains supported as a fallback for already-installed extensions
- * that have not yet shipped the subprotocol change (see wsTokenAuth fallback).
- */
-const AUTH_PROTOCOL_PREFIX = 'bc-auth.';
-
-/**
- * Extract the auth token from an upgrade request. Prefers the
- * `Sec-WebSocket-Protocol` header (post-hardening, not logged anywhere); falls
- * back to the legacy `?token=` query param so an old extension keeps working
- * against a new daemon (and vice-versa). Returns '' when neither is present.
- *
- * `req.headers['sec-websocket-protocol']` is a string for a single value or a
- * comma-separated list when the client offered several; we accept the token in
- * any position so callers don't have to order their subprotocol offers.
- */
-function extractToken(req: http.IncomingMessage, url: URL): string {
-  const header = req.headers['sec-websocket-protocol'];
-  if (header) {
-    const offers = Array.isArray(header) ? header : String(header).split(',');
-    for (const raw of offers) {
-      const proto = raw.trim();
-      if (proto.startsWith(AUTH_PROTOCOL_PREFIX)) {
-        return proto.slice(AUTH_PROTOCOL_PREFIX.length);
-      }
-    }
-  }
-  return url.searchParams.get('token') ?? '';
-}
-
-/**
- * Constant-time token compare (mirrors Daemon.checkToken in daemon.ts). The
- * previous `presented !== this.token` leaked the token length via short-circuit
- * string comparison. We pad both to a fixed size so timingSafeEqual always runs
- * on equal-length buffers, then re-check equality explicitly (timingSafeEqual
- * can return true for distinct strings that happen to share a padded buffer).
- */
-function tokensMatch(presented: string, expected: string): boolean {
-  if (!presented || !expected) return false;
-  const FIXED = 128;
-  const a = Buffer.alloc(FIXED);
-  const b = Buffer.alloc(FIXED);
-  a.write(presented);
-  b.write(expected);
-  return crypto.timingSafeEqual(a, b) && presented === expected;
-}
+export const MAX_WS_MESSAGE_BYTES = Math.max(
+  1024,
+  Number.parseInt(process.env.BC_MAX_WS_MESSAGE_BYTES ?? '', 10) || 1_000_000,
+);
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -159,29 +56,10 @@ interface BridgeOptions {
   maxRetries?: number;
   pingIntervalMs?: number;
   defaultTimeoutMs?: number;
+  maxWsPayloadBytes?: number;
+  handshakeGraceMs?: number;
 }
 
-/** Probe the authenticated daemon endpoint without trusting the port owner. */
-export async function isDaemonResponsiveOnPort(
-  host: string,
-  port: number,
-  timeoutMs = 1200,
-  enrollmentSecret = '',
-): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const headers = enrollmentSecret ? { 'X-BC-Enrollment': enrollmentSecret } : undefined;
-  try {
-    const res = await fetch(`http://${host}:${port}/pair`, { signal: controller.signal, headers });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { token?: unknown };
-    return typeof body?.token === 'string' && body.token.length > 0;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 export class ExtensionBridge {
   private httpServer: http.Server | null = null;
@@ -196,6 +74,11 @@ export class ExtensionBridge {
   private maxRetries: number;
   private pingIntervalMs: number;
   private defaultTimeoutMs: number;
+  private maxWsPayloadBytes: number;
+  private handshakeGraceMs: number;
+  private handshakeState: 'disconnected' | 'pending' | 'ready' | 'legacy' | 'incompatible' = 'disconnected';
+  private handshakeError: string | null = null;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private missedPongs = 0;
   private connectionWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
@@ -219,6 +102,34 @@ export class ExtensionBridge {
     this.maxRetries = options.maxRetries ?? 2;
     this.pingIntervalMs = options.pingIntervalMs ?? 10_000;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000;
+    this.maxWsPayloadBytes = options.maxWsPayloadBytes ?? MAX_WS_MESSAGE_BYTES;
+    this.handshakeGraceMs = options.handshakeGraceMs ?? 25;
+  }
+
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = null;
+  }
+
+  private markExtensionReady(state: 'ready' | 'legacy'): void {
+    this.clearHandshakeTimer();
+    this.handshakeState = state;
+    this.handshakeError = null;
+    this.missedPongs = 0;
+    this.startPingLoop();
+    this.connectionWaiters.forEach((waiter) => waiter.resolve());
+    this.connectionWaiters = [];
+    console.error(`[Bridge] Extension connected (${state} protocol)`);
+  }
+
+  private rejectExtensionHandshake(reason: string): void {
+    this.clearHandshakeTimer();
+    this.handshakeState = 'incompatible';
+    this.handshakeError = reason;
+    const error = new Error(reason);
+    this.connectionWaiters.forEach((waiter) => waiter.reject(error));
+    this.connectionWaiters = [];
+    this.rejectAllPending(reason);
   }
 
   /**
@@ -282,13 +193,20 @@ export class ExtensionBridge {
         // entry). Without this, the Origin gate alone would leave /pair open to
         // whoever wins the first-contact race. Constant-time compare to avoid a
         // timing oracle on the secret.
-        if (this.enrollmentSecret) {
-          const presented = req.headers['x-bc-enrollment'];
-          const presentedStr = Array.isArray(presented) ? presented[0] : presented;
-          if (typeof presentedStr !== 'string' || !tokensMatch(presentedStr, this.enrollmentSecret)) {
-            res.writeHead(403).end('Forbidden: invalid enrollment');
-            return;
-          }
+        if (!this.enrollmentSecret) {
+          // Fail closed: without a configured enrollment secret the whole HTTP
+          // surface is refused — /pair hands out the raw auth token, and every
+          // legitimate client (popup + extension) always sends the header. An
+          // empty secret means the embedder skipped loadOrCreateEnrollment();
+          // silently serving open-gated HTTP is never the right recovery.
+          res.writeHead(503).end('Enrollment secret not configured — refusing HTTP request');
+          return;
+        }
+        const presented = req.headers['x-bc-enrollment'];
+        const presentedStr = Array.isArray(presented) ? presented[0] : presented;
+        if (typeof presentedStr !== 'string' || !tokensMatch(presentedStr, this.enrollmentSecret)) {
+          res.writeHead(403).end('Forbidden: invalid enrollment');
+          return;
         }
         if (decision.origin && !this.pinnedExtensionOrigin) {
           this.pinnedExtensionOrigin = decision.origin;
@@ -329,7 +247,11 @@ export class ExtensionBridge {
         return false;
       };
 
-      this.wss = new WebSocketServer({ noServer: true, handleProtocols: pickAuthProtocol });
+      this.wss = new WebSocketServer({
+        noServer: true,
+        handleProtocols: pickAuthProtocol,
+        maxPayload: this.maxWsPayloadBytes,
+      });
 
       server.on('upgrade', (req, socket, head) => {
         // Authenticate BEFORE completing the WebSocket handshake. This way a bad
@@ -368,17 +290,26 @@ export class ExtensionBridge {
         }
 
         this.client = ws;
+        this.clearHandshakeTimer();
+        this.handshakeState = 'pending';
+        this.handshakeError = null;
         this.missedPongs = 0;
-        this.startPingLoop();
-
-        this.connectionWaiters.forEach(w => w.resolve());
-        this.connectionWaiters = [];
-
-        console.error('[Bridge] Extension connected');
 
         ws.on('message', (data: Buffer) => {
           try {
             const msg = JSON.parse(data.toString());
+            if (msg.type === 'helloAck') {
+              const version = validateProtocolVersion(msg.protocolVersion);
+              const capabilities = validateCapabilities(msg.capabilities, ['tool-dispatch', 'ping-pong']);
+              if (!version.ok || !capabilities.ok) {
+                const reason = version.reason || capabilities.reason || 'Extension protocol handshake failed.';
+                this.rejectExtensionHandshake(reason);
+                ws.close(1002, 'incompatible protocol');
+                return;
+              }
+              this.markExtensionReady(version.legacy || capabilities.legacy ? 'legacy' : 'ready');
+              return;
+            }
             if (msg.type === 'pong') {
               this.missedPongs = 0;
               return;
@@ -393,6 +324,11 @@ export class ExtensionBridge {
           if (this.client !== ws) return;
           console.error('[Bridge] Extension disconnected');
           this.client = null;
+          this.clearHandshakeTimer();
+          if (this.handshakeState !== 'incompatible') {
+            this.handshakeState = 'disconnected';
+            this.handshakeError = null;
+          }
           this.stopPingLoop();
           this.rejectAllPending('Extension disconnected');
         });
@@ -400,6 +336,18 @@ export class ExtensionBridge {
         ws.on('error', (err: Error) => {
           console.error('[Bridge] Socket error:', err.message);
         });
+
+        // Modern extensions acknowledge immediately. The short fallback keeps
+        // pre-handshake extension builds usable during a rolling local upgrade.
+        setTimeout(() => {
+          if (this.client !== ws || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify(buildExtensionHello(APP_VERSION)));
+          this.handshakeTimer = setTimeout(() => {
+            if (this.client === ws && this.handshakeState === 'pending') {
+              this.markExtensionReady('legacy');
+            }
+          }, this.handshakeGraceMs);
+        }, 0);
       });
 
       server.on('listening', () => {
@@ -458,7 +406,9 @@ export class ExtensionBridge {
   }
 
   isConnected(): boolean {
-    return this.client !== null && this.client.readyState === WebSocket.OPEN;
+    return this.client !== null
+      && this.client.readyState === WebSocket.OPEN
+      && (this.handshakeState === 'ready' || this.handshakeState === 'legacy');
   }
 
   /**
@@ -477,6 +427,7 @@ export class ExtensionBridge {
 
   waitForConnection(timeoutMs = 10_000): Promise<void> {
     if (this.isConnected()) return Promise.resolve();
+    if (this.handshakeError) return Promise.reject(new Error(this.handshakeError));
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -503,10 +454,11 @@ export class ExtensionBridge {
     if (!this.isConnected()) {
       try {
         await this.waitForConnection(5_000);
-      } catch {
-        throw new Error(
-          'Chrome extension not connected. Make sure the Browser Controller extension is installed and enabled.',
-        );
+      } catch (error) {
+        if (this.handshakeError) throw new Error(this.handshakeError);
+        throw new Error(error instanceof Error && /protocol|capabilit/i.test(error.message)
+          ? error.message
+          : 'Chrome extension not connected. Make sure the Browser Controller extension is installed and enabled.');
       }
     }
 
@@ -602,6 +554,7 @@ export class ExtensionBridge {
   }
 
   stop(): void {
+    this.clearHandshakeTimer();
     this.stopPingLoop();
     this.rejectAllPending('Server shutting down');
     this.connectionWaiters.forEach(w => w.reject(new Error('Server shutting down')));

@@ -3,6 +3,7 @@ mcp-server/dist/
 *.tsbuildinfo
 .DS_Store
 graphify-out/
+coverage/
 # local env (may hold real tokens / secrets if populated) — keep .env.example
 .env
 .env.local

@@ -2,10 +2,15 @@
  * Tool router (extracted from background.js): routes daemon WS messages to
  * handlers through the per-tab mutex + lock layer, and owns in-flight abort
  * controllers. The handler registry is a module-level constant — the old
- * dispatch() rebuilt a 22-entry object on every call.
+ * dispatch() rebuilt the tool map on every call.
  */
 import { runOnTab as runOnTabLib } from "./tab-concurrency.js";
-import { tabLocks, tabMutex, persistSessionState } from "./state.js";
+import {
+  tabLocks,
+  tabMutex,
+  observationSnapshots,
+  persistSessionState,
+} from "./state.js";
 import {
   sendJson,
   updateBadge,
@@ -42,6 +47,7 @@ import {
 } from "../handlers/tabs.js";
 import { handleRunAction, handleUploadFile } from "../handlers/cdp.js";
 import { handleIntercept } from "../handlers/intercept.js";
+import { handleObserve, handleAct } from "../handlers/agent-api.js";
 
 // sessionId arrives as a first-class top-level field on the WS message (audit
 // M1) — the daemon no longer injects it into params. We read it here so the
@@ -88,6 +94,8 @@ const HANDLERS = {
   browser_find: handleFind,
   browser_text: handleGetPageText,
   browser_intercept: handleIntercept,
+  browser_observe: handleObserve,
+  browser_act: handleAct,
 };
 
 /** All tool names the router can dispatch (exported for the drift-guard test). */
@@ -138,6 +146,7 @@ export async function handleMessage(msg) {
       // releaseByOwner is synchronous and returns the released tabIds before
       // any shield calls below run — no async race (review NOTE 7a).
       const released = tabLocks.releaseByOwner(owner);
+      observationSnapshots.dropSession(owner);
       // Persist: without this, a service-worker recycle after the disconnect
       // would restore the just-released lock from session storage and
       // resurrect stale exclusivity (spec-review finding).
@@ -185,16 +194,25 @@ export async function handleMessage(msg) {
   }
   const tabId = extractTabId(tool, p);
 
+  // A tool call without an id can never be answered: it used to collide in
+  // activeControllers under key `undefined` (aborting the wrong controller)
+  // and leave the caller hanging until its timeout. Refuse it up front —
+  // raw-WS clients only; the daemon always sends ids.
+  if (id === undefined || id === null) {
+    sendResponse(null, { success: false, error: 'tool call is missing id — no response can be correlated' });
+    return;
+  }
+
   // ESCAPE HATCH (field report: frozen-tab deadlock): tabs close/focus must
   // NEVER queue behind the per-tab mutex. A page frozen by a native dialog
   // (GWT-style) pins its mutex forever — an in-flight executeScript can't be
   // aborted — so anything routed through runOnTab on that tab deadlocks,
   // including close (which needs NO page cooperation: chrome.tabs.remove)
-  // and even handle_dialog. Closing the tab is the operator's guaranteed way
-  // out, so these two actions take the direct path (their ownership checks
-  // live inside handleTabs and still apply).
-  const bypassesMutex =
-    tool === "browser_tabs" && (p.action === "close" || p.action === "focus");
+  // and even handle_dialog. Close/focus retain their ownership checks inside
+  // handleTabs; dialog handling uses CDP directly and must reach the native
+  // prompt without waiting for page execution to settle.
+  const bypassesMutex = (tool === 'browser_tabs' && (p.action === 'close' || p.action === 'focus'))
+    || tool === 'browser_handle_dialog';
 
   // Tools without a tabId (tabs list/create, console-less) run directly.
   if (tabId == null || bypassesMutex) {

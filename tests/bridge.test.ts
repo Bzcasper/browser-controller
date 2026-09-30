@@ -63,7 +63,7 @@ describe('ExtensionBridge', () => {
 
   function createBridge(
     port: number,
-    opts?: Partial<{ maxRetries: number; token: string; enrollmentSecret: string }>,
+    opts?: Partial<{ maxRetries: number; token: string; enrollmentSecret: string; maxWsPayloadBytes: number }>,
   ): ExtensionBridge {
     const b = new ExtensionBridge({
       port,
@@ -71,6 +71,7 @@ describe('ExtensionBridge', () => {
       pingIntervalMs: 60_000,
       token: opts?.token,
       enrollmentSecret: opts?.enrollmentSecret,
+      maxWsPayloadBytes: opts?.maxWsPayloadBytes,
     });
     bridges.push(b);
     return b;
@@ -102,6 +103,21 @@ describe('ExtensionBridge', () => {
     expect(bridge.isConnected()).toBe(true);
   });
 
+  it('closes oversized WebSocket frames before parsing them', async () => {
+    const port = nextPort();
+    const bridge = createBridge(port);
+    await bridge.start();
+
+    const client = await connectClient(port);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      client.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    client.send(JSON.stringify({ id: 'huge', success: true, result: 'x'.repeat(1_100_000) }));
+
+    await expect(closed).resolves.toMatchObject({ code: 1009 });
+    expect(bridge.isConnected()).toBe(false);
+  });
+
   it('sends tool call and receives response', async () => {
     const port = nextPort();
     const bridge = createBridge(port);
@@ -117,6 +133,19 @@ describe('ExtensionBridge', () => {
 
     const result = await bridge.callTool('browser_click', { ref: 'e1' });
     expect(result).toEqual({ clicked: true });
+  });
+
+  it('closes an extension socket that sends a frame over the payload limit', async () => {
+    const port = nextPort();
+    const bridge = createBridge(port, { maxWsPayloadBytes: 64 });
+    await bridge.start();
+
+    const client = await connectClient(port);
+    const closed = new Promise<number>((resolve) => client.once('close', (code) => resolve(code)));
+    client.send('x'.repeat(256));
+
+    await expect(closed).resolves.toBe(1009);
+    expect(bridge.isConnected()).toBe(false);
   });
 
   it('rejects on error response', async () => {
@@ -464,11 +493,14 @@ describe('ExtensionBridge', () => {
 
   it('HTTP endpoints accept the extension-popup Origin', async () => {
     const port = nextPort();
-    const bridge = createBridge(port, { token: 'sekret' });
+    const bridge = createBridge(port, { token: 'sekret', enrollmentSecret: 'enroll-secret' });
     bridge.registerHttpHandler(() => ({ token: 'sekret' }));
     await bridge.start();
 
-    const res = await httpGet(port, '/pair', { Origin: 'chrome-extension://abc123' });
+    const res = await httpGet(port, '/pair', {
+      Origin: 'chrome-extension://abc123',
+      'X-BC-Enrollment': 'enroll-secret',
+    });
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body).token).toBe('sekret');
     // CORS reflects the extension origin so the browser exposes the body to it.
@@ -477,12 +509,25 @@ describe('ExtensionBridge', () => {
 
   it('HTTP endpoints accept a no-Origin local client (curl/scripts/tests)', async () => {
     const port = nextPort();
-    const bridge = createBridge(port);
+    const bridge = createBridge(port, { enrollmentSecret: 'enroll-secret' });
     bridge.registerHttpHandler(() => ({ ok: true }));
     await bridge.start();
 
-    const res = await httpGet(port, '/status'); // no Origin header
+    const res = await httpGet(port, '/status', { 'X-BC-Enrollment': 'enroll-secret' }); // no Origin header
     expect(res.status).toBe(200);
+  });
+
+  it('HTTP fails closed when no enrollment secret is configured', async () => {
+    // Defense-in-depth: a bridge constructed without an enrollment secret must
+    // refuse the whole HTTP surface — /pair hands out the raw auth token, and
+    // every legitimate client always sends the header. Never serve open-gated.
+    const port = nextPort();
+    const bridge = createBridge(port, { token: 'sekret' });
+    bridge.registerHttpHandler(() => ({ token: 'sekret' }));
+    await bridge.start();
+
+    const res = await httpGet(port, '/pair'); // no Origin, no enrollment header
+    expect(res.status).toBe(503);
   });
 
   it('an unhandled path answers 404 instead of hanging (handler returns undefined)', async () => {
@@ -491,11 +536,11 @@ describe('ExtensionBridge', () => {
     // the response" — so no res.end() ever fired and the client hung until its
     // own timeout. Undefined must map to a real 404.
     const port = nextPort();
-    const bridge = createBridge(port);
+    const bridge = createBridge(port, { enrollmentSecret: 'enroll-secret' });
     bridge.registerHttpHandler(() => undefined); // what Daemon.handleHttp does for unknown paths
     await bridge.start();
 
-    const res = await httpGet(port, '/nope');
+    const res = await httpGet(port, '/nope', { 'X-BC-Enrollment': 'enroll-secret' });
     expect(res.status).toBe(404);
     expect(res.body).toBe('Not found');
   });
@@ -509,12 +554,15 @@ describe('ExtensionBridge', () => {
   // with `chrome-extension://`. This is the case a `startsWith` gate misses.
   it('rejects a second, different extension ID after the first is pinned', async () => {
     const port = nextPort();
-    const bridge = createBridge(port, { token: 'sekret' });
+    const bridge = createBridge(port, { token: 'sekret', enrollmentSecret: 'enroll-secret' });
     bridge.registerHttpHandler(() => ({ ok: true }));
     await bridge.start();
 
     // First extension Origin → pinned (TOFU), request succeeds.
-    const first = await httpGet(port, '/status', { Origin: 'chrome-extension://legitID' });
+    const first = await httpGet(port, '/status', {
+      Origin: 'chrome-extension://legitID',
+      'X-BC-Enrollment': 'enroll-secret',
+    });
     expect(first.status).toBe(200);
 
     // Different extension ID (a hostile co-installed extension) → must 403,
@@ -549,15 +597,21 @@ describe('ExtensionBridge', () => {
 
   it('keeps serving the pinned extension ID on subsequent requests', async () => {
     const port = nextPort();
-    const bridge = createBridge(port, { token: 'sekret' });
+    const bridge = createBridge(port, { token: 'sekret', enrollmentSecret: 'enroll-secret' });
     bridge.registerHttpHandler(() => ({ ok: true }));
     await bridge.start();
 
-    const first = await httpGet(port, '/status', { Origin: 'chrome-extension://legitID' });
+    const first = await httpGet(port, '/status', {
+      Origin: 'chrome-extension://legitID',
+      'X-BC-Enrollment': 'enroll-secret',
+    });
     expect(first.status).toBe(200);
 
     // Same ID again → still 200, and CORS reflects exactly that origin.
-    const again = await httpGet(port, '/status', { Origin: 'chrome-extension://legitID' });
+    const again = await httpGet(port, '/status', {
+      Origin: 'chrome-extension://legitID',
+      'X-BC-Enrollment': 'enroll-secret',
+    });
     expect(again.status).toBe(200);
     expect(again.acao).toBe('chrome-extension://legitID');
   });

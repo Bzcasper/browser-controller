@@ -12,6 +12,7 @@ import {
   pushCapped,
   persistSessionState,
   dropTabState,
+  dropDocumentState,
 } from "./lib/state.js";
 import { showLockShield, hideLockShield } from "./lib/overlay.js";
 import { enrichCapture } from "./handlers/intercept.js";
@@ -148,6 +149,10 @@ export function registerEventListeners() {
   // from the short-lived per-call listener inside handleNavigate — they share no
   // state and Chrome supports multiple onUpdated listeners (review NOTE 7c).
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === "loading") {
+      dropDocumentState(tabId);
+      persistSessionState();
+    }
     if (changeInfo.status === "complete" && tabLocks.owner(tabId)) {
       showLockShield(tabId);
     }

@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="https://github.com/compnew2006/browser-controller/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/compnew2006/browser-controller/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-  <a href="https://github.com/compnew2006/browser-controller/releases"><img src="https://img.shields.io/badge/version-2.1.1-blue?style=flat-square" alt="v2.1.1" /></a>
+  <a href="https://github.com/compnew2006/browser-controller/releases"><img src="https://img.shields.io/badge/version-2.3.0-blue?style=flat-square" alt="v2.3.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node >= 20" />
   <img src="https://img.shields.io/badge/TypeScript-strict-blue?style=flat-square" alt="TypeScript strict" />
-  <img src="https://img.shields.io/badge/tests-215%20passing-22c55e?style=flat-square" alt="215 tests" />
+  <img src="https://img.shields.io/badge/tests-291%20passing-22c55e?style=flat-square" alt="291 tests" />
 </p>
 
 ---
@@ -40,7 +40,10 @@ It already has your browser open right there. It just can't see it.
 - **Same-origin iframe piercing.** Legacy/enterprise UIs that live inside iframes (e.g. an ONT console in `iframe#mainFrame`) are reachable: all locator tools search iframe documents, and `find`/`click_text` walk every frame.
 - **Open-dialog rescue.** A native `alert`/`confirm`/`prompt` freezes the page's JS thread — `browser_handle_dialog` dismisses it out-of-band via CDP, no page JS needed, which also un-blocks every other tool on that tab. `browser_tabs close/focus` always work, even on a frozen tab.
 - **Authenticated local connection.** Token + one-time enrollment secret, so no other local process can silently drive your browser. Everything stays on localhost — no cloud, no telemetry.
-- **No debugger banner.** `browser_evaluate` runs in the page's MAIN world via `chrome.scripting` — no yellow "this tab is being debugged" banner, and real values return across the MV3 world boundary.
+- **Versioned compatibility handshake.** The daemon and extension advertise an application-protocol version, build version, and capabilities before tool traffic is accepted. Explicitly incompatible protocol majors fail with an actionable error instead of producing unexplained timeouts; the build version is diagnostic and does not by itself make compatible peers fail.
+- **Real, trusted input.** Clicks, typing and key presses go through the Chrome DevTools Protocol, so the page sees `isTrusted` events, focus really moves, default actions run (Tab moves focus, Enter submits, arrows drive autocomplete menus) and focus/blur fire even while the window is in the background — legacy grids and lookup widgets behave as they do for a person. One debugger session per tab is reused and detached after 30 s idle (the yellow "being debugged" banner shows only while it is attached). Pass `trusted: false` for the old synthetic events with no banner; they are also the automatic fallback when the debugger can't attach.
+- **Batches.** `browser_batch` runs a list of tool calls in one round-trip and stops at the first failure — a click → type → Tab → wait → read sequence is one call instead of five.
+- **Console-style JavaScript.** `browser_evaluate` accepts code as you'd type it in DevTools: top-level `await`, several statements, the last expression's value is returned, DOM nodes come back as readable descriptions — and page CSP doesn't block it.
 - **Honest errors.** Every tool failure reaches your agent as a real `isError` result with the full payload — no "success" responses hiding failures mid-workflow.
 
 ---
@@ -49,33 +52,37 @@ It already has your browser open right there. It just can't see it.
 
 Three pieces, all on your machine. Nothing leaves localhost. The daemon control plane is hard-bound to `127.0.0.1`; there is no supported remote/n8n listener.
 
-```
-  Agent (Cursor / Claude / Windsurf)        ── other agents connect too ──┐
-                  │ stdio (MCP protocol)                                   │
-                  ▼                                                        ▼
-  ┌─────────────────────────────┐   ┌─────────────────────────────────────────┐
-  │  thin MCP client            │   │  thin MCP client                        │
-  │  (node mcp-server/dist/     │   │  (node mcp-server/dist/                 │
-  │   index.js)                 │   │   index.js)                             │
-  │  - speaks MCP over stdio    │   │  - spawns daemon if not running         │
-  │  - forwards calls to daemon │   │  - gets its own sessionId               │
-  └──────────────┬──────────────┘   └────────────────────┬───────────────────┘
-                 │ local IPC socket (AF_UNIX / named pipe, token-auth)     │
-                 ▼                                                          ▼
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │  DAEMON (single long-running process, owns port 7225)                     │
-  │  - multiplexes N clients → 1 extension                                    │
-  │  - tags every call with the client's sessionId                            │
-  │  - heartbeat eviction, per-session rate limiting                          │
-  └──────────────────────────────┬───────────────────────────────────────────┘
-                                 │ WebSocket ws://127.0.0.1:7225 (token-auth)
-                                 ▼
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │  Chrome Extension (Manifest V3 service worker)                            │
-  │  - resolves the target tabId (never "the active tab" implicitly)          │
-  │  - serializes same-tab actions, parallelizes cross-tab actions            │
-  │  - executes click/type/snapshot/evaluate against the named tab            │
-  └──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Client["MCP client (Cursor / Claude / Windsurf)"]
+        A["agent"]
+    end
+
+    subgraph Thin["thin MCP client — mcp-server/dist/index.js"]
+        B["DaemonClient<br/>speaks MCP over stdio<br/>spawns daemon if not running<br/>gets its own sessionId"]
+    end
+
+    subgraph Daemon["daemon — single long-running process, owns port 7225"]
+        C["daemon.ts<br/>multiplexes N clients → 1 extension<br/>sessions · rate limit · heartbeats"]
+        D["bridge.ts (ExtensionBridge)<br/>HTTP /pair /status /kill<br/>WebSocket for the extension"]
+    end
+
+    subgraph Ext["Chrome extension (Manifest V3 service worker)"]
+        E["connection.js<br/>pairing · reconnect backoff"]
+        F["router.js<br/>tool dispatch"]
+        G["tab-concurrency.js<br/>per-tab mutex · locks · shield"]
+        H["handlers/*<br/>interaction · inspection · agent-api<br/>cdp · navigation · tabs"]
+        I["page-exec.js safeExec<br/>chrome.scripting func: — CSP-safe"]
+        E --> F --> G --> H --> I
+    end
+
+    P["Page — your real sessions"]
+
+    A -->|stdio MCP| B
+    B -->|IPC socket + token| C
+    C --> D
+    D <-->|Authenticated WebSocket<br/>protocol version + capabilities| E
+    I --> P
 ```
 
 **Key idea:** the first time any agent runs, the thin client spawns a background **daemon** that owns port 7225 and the extension connection. Every subsequent agent (even from a different MCP client) connects to that same daemon over a local IPC socket and gets its own `sessionId`. The extension sees one stable connection and routes each call to the exact tab the caller specified.
@@ -201,6 +208,10 @@ This preserves the real Chrome session workflow: no Playwright/headless browser
 is launched, and the existing Chrome profile, cookies, logins, and tabs remain
 the browser being controlled.
 
+### Permission and trust boundary
+
+The unpacked extension deliberately requests Chrome's powerful `debugger`, `scripting`, `webRequest`, and `<all_urls>` permissions. They are what let it inspect network activity, inject functions, upload files through CDP, and automate any normal web tab you select. They also mean a connected MCP agent can read and change sensitive pages in your signed-in browser. Install the extension only from source you trust, pair it only with a trusted local daemon, and do not expose the daemon port beyond localhost. Chrome-protected pages such as `chrome://`, the Web Store, and DevTools remain inaccessible.
+
 ---
 
 ## Using it
@@ -229,6 +240,31 @@ The model is **tab-first**: the agent always says _which_ tab to act on. It neve
    If a ref is stale but the element still exists, it's found automatically via a robust selector + text/role scan (response carries `via: "fallback"`). If the element was scrolled away entirely (virtualized feeds), the response carries **`freshRefs: [...]`** with a fresh snapshot inline — retry with one of those new refs in the same step, no separate snapshot needed.
 4. **Verify** — snapshot or read text again after the action.
 
+### Safe Observe → Act workflow
+
+For automation that must fail safely when a page changes, use the Browser Controller 2.0 agent API. `browser_observe` captures one compact semantic state in a single page execution and returns session-, tab-, document-, and snapshot-owned refs:
+
+```text
+browser_observe { tabId: 15, mode: "compact" }
+→ {
+    snapshotId: "s_…",
+    documentVersion: "d_…:1:0",
+    elements: [
+      { ref: "e1", role: "button", name: "Continue",
+        bbox: [422, 680, 160, 44], allowedActions: ["click", "focus", "hover"] }
+    ]
+  }
+```
+
+Pass the same `tabId`, `snapshotId`, and ref to `browser_act`:
+
+```text
+browser_act { tabId: 15, snapshotId: "s_…", action: "click", ref: "e1" }
+browser_act { tabId: 15, snapshotId: "s_…", action: "type", ref: "e4", text: "London", clear: true }
+```
+
+Before acting, the extension checks snapshot ownership, document/route identity, target semantics, current geometry and visibility, enabled state, allowed actions, and click-point occlusion. Recoverable replacements need one unique stable identity; ambiguous or unsafe state returns a compact error such as `DOCUMENT_CHANGED`, `STALE_STATE`, `TARGET_OCCLUDED`, or `ACTION_NOT_ALLOWED`. Call `browser_observe` again after one of these state errors.
+
 ### Multi-agent coordination (two agents, two tabs)
 
 1. Agent A lists tabs, picks tab 10, optionally locks it: `browser_tabs { action: "lock", tabId: 10 }`
@@ -250,7 +286,10 @@ A fixed-height tabbed shell (the body never scrolls, only the lists do):
 - **Forgot `tabId`?** You'll get a clear error: `tabId is required. Call browser_tabs list first.`
 - **Protected pages** (`chrome://`, the Web Store, devtools) can't be scripted — you'll get `Cannot access protected page (chrome://...)` instead of a silent hang.
 - **`browser_navigate`** is the one tool where `tabId` is optional (defaults to the active tab) — but for multi-agent safety, pass it explicitly. **Hash-only changes** (e.g. `/page` → `/page#section`) resolve as soon as the URL is set, without waiting for a `complete` event (SPAs don't reload on hash change, so that event never fires).
-- **`browser_evaluate`** runs in the page's MAIN world (no debugger banner, CSP-safe) and returns real values (JSON-serialized across the world boundary). It's powerful but **non-idempotent** — it won't be auto-retried on timeout.
+- **`browser_evaluate`** runs over CDP in REPL mode (top-level `await`, last expression returned, `timeout` up to 120 s). `mode: "scripting"` runs it in the page's MAIN world via `chrome.scripting` instead — no debugger banner, but a strict page CSP can reject it and top-level `await` isn't available. It and `browser_run_action` are powerful and **non-idempotent**, so they are not auto-retried on timeout.
+- **`browser_type`** types like a person: `change`/blur fire when focus leaves the field, so follow it with `browser_press_key { key: "Tab" }` to commit a value. It returns the field's value after typing.
+- **Iframe reach is origin-bound.** Snapshot, find, and interaction handlers can descend into same-origin iframes. Browser same-origin rules prevent those DOM paths from entering cross-origin iframes; use a separately targetable tab or an origin-specific integration for content inside them.
+- **The control shield is top-frame protection.** Its frame and input interception are installed in the top document. Do not treat it as a security boundary for independently focused or cross-origin child frames; avoid manual input anywhere in a tab while an agent owns it.
 - **Scrolling virtualized feeds** (Facebook/Instagram/Twitter): `browser_scroll` returns `refsMayBeStale: true` because those sites recycle DOM nodes. Re-snapshot before your next interaction.
 - **Duplicate elements**: when several elements share text+role (e.g. 3 "Like" buttons), the fallback resolver picks the correct one by ordinal (`nth`), not just the first match.
 - **A frozen tab** (native dialog blocking) doesn't deadlock you: `browser_handle_dialog` dismisses it via CDP, and `browser_tabs { action: "close" }` always works as the guaranteed way out.
@@ -259,7 +298,7 @@ A fixed-height tabbed shell (the body never scrolls, only the lists do):
 
 ## 🧠 Teach Your Agent
 
-The agent can use all 22 tools out of the box, but it works better when it knows the **tab-first** workflow. From the repo root:
+The agent can use all 25 tools out of the box, but it works better when it knows the **tab-first** workflow. From the repo root:
 
 ```bash
 npm run setup:cursor   # or: node mcp-server/dist/index.js --setup cursor
@@ -289,31 +328,34 @@ See [`agent-config/`](agent-config/) for manual installation or to customize the
 
 ## What It Can Do
 
-22 tools. Every page-interaction tool takes a **`tabId`** (the one exception is `browser_navigate`, where it's optional).
+25 tools. Every page-interaction tool takes a **`tabId`** (the one exception is `browser_navigate`, where it's optional).
 
 **See**
 
-| Tool                 | What it does                                                                                                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `browser_snapshot`   | Accessibility tree with element refs. Compact mode (default) returns only interactive elements. Traverses shadow DOM + iframes. |
-| `browser_screenshot` | Capture a tab as an image (activates the tab first to capture)                                                                  |
-| `browser_text`       | Extract raw text from page or element                                                                                           |
-| `browser_find`       | Query elements by natural language — walks same-origin iframes too                                                              |
+| Tool | What it does |
+|------|-------------|
+| `browser_observe` | Compact atomic semantic observation with snapshot/document identity, geometry, state, and dynamic allowed actions |
+| `browser_snapshot` | Accessibility tree with element refs. Compact mode (default) returns only interactive elements. Traverses open shadow DOM + same-origin iframes. |
+| `browser_screenshot` | Capture a tab as an image over CDP — `maxWidth` / `scale` / `jpeg` to cut tokens, `fullPage` for the whole page |
+| `browser_text` | Extract raw text from page or element |
+| `browser_find` | Query elements by natural language — walks same-origin iframes too |
 
 **Interact**
 
-| Tool                  | What it does                                                           |
-| --------------------- | ---------------------------------------------------------------------- |
-| `browser_click`       | Click by ref or CSS selector — pierces same-origin iframes             |
-| `browser_click_text`  | Click by visible text. Works through React portals and overlays        |
-| `browser_type`        | Type into inputs and contenteditable fields                            |
-| `browser_press_key`   | Key combos (Enter, Escape, Ctrl+A)                                     |
-| `browser_scroll`      | Scroll pages and virtual containers                                    |
-| `browser_hover`       | Trigger tooltips and dropdowns                                         |
-| `browser_select`      | Pick from native `<select>` dropdowns                                  |
-| `browser_wait`        | Wait for elements to appear or disappear                               |
-| `browser_fill_form`   | Fill multiple form fields in one call (React/Vue-safe setters)         |
-| `browser_drag`        | Drag element-to-element (uses CDP for reliability)                     |
+| Tool | What it does |
+|------|-------------|
+| `browser_act` | Safely click/type/select/focus/hover/keypress/scroll/upload against a `browser_observe` snapshot |
+| `browser_click` | Real (trusted) click by ref or CSS selector — pierces same-origin iframes |
+| `browser_click_text` | Click by visible text. Works through React portals and overlays |
+| `browser_type` | Real key presses into inputs and contenteditable fields; returns the resulting value |
+| `browser_press_key` | Real key presses and combos (`Enter`, `Tab`, `ctrl+a`) |
+| `browser_batch` | Run several tool calls in one round-trip; stops at the first failure |
+| `browser_scroll` | Scroll pages and virtual containers |
+| `browser_hover` | Trigger tooltips and dropdowns |
+| `browser_select` | Pick from native `<select>` dropdowns |
+| `browser_wait` | Wait for elements to appear or disappear |
+| `browser_fill_form` | Fill multiple form fields in one call (React/Vue-safe setters) |
+| `browser_drag` | Drag element-to-element (uses CDP for reliability) |
 | `browser_upload_file` | Upload files through `<input type="file">` (uses CDP, strict-CSP safe) |
 
 <details>
@@ -339,11 +381,11 @@ Paths are absolute and local to the machine running the browser. Omit `ref`/`sel
 
 **Debug & Advanced**
 
-| Tool                    | What it does                                                                |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `browser_console`       | Console output (log, warn, error) — per-tab, capped at 200 entries          |
-| `browser_network`       | XHR/fetch requests with status codes — per-tab, optional `limit`            |
-| `browser_evaluate`      | Run JavaScript in the page's MAIN world (no banner, CSP-safe)               |
+| Tool | What it does |
+|------|-------------|
+| `browser_console` | Console output (log, warn, error) — per-tab, capped at 200 entries |
+| `browser_network` | XHR/fetch requests with status codes — per-tab, optional `limit` |
+| `browser_evaluate` | Run JavaScript like the DevTools console: top-level `await`, last value returned, not blocked by CSP |
 | `browser_handle_dialog` | Dismiss/accept an open alert/confirm/prompt via CDP (works on frozen pages) |
 | `browser_run_action`    | Run a self-contained JS action object via CDP                               |
 
@@ -365,11 +407,11 @@ Paths are absolute and local to the machine running the browser. Omit `ref`/`sel
 
 ## Configuration
 
-| Env var                          | Default          | What it does                                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WS_PORT`                        | `7225`           | WebSocket port the daemon uses for the extension connection                                                                                                                                                                                                                                                                                                                                        |
-| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset)          | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of ~4200 for all 22 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
-| `MCP_AGENT_NAME`                 | (auto: IDE name) | Override the agent name shown in the popup (same as `--agent`)                                                                                                                                                                                                                                                                                                                                     |
+| Env var | Default | What it does |
+|---------|---------|-------------|
+| `WS_PORT` | `7225` | WebSocket port the daemon uses for the extension connection |
+| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset) | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of loading all 26 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
+| `MCP_AGENT_NAME` | (auto: IDE name) | Override the agent name shown in the popup (same as `--agent`) |
 
 ### Daemon state files
 
@@ -393,6 +435,10 @@ To fully reset: stop your MCP clients, delete the folder, and the next run recre
 - Per-tool timeouts (5–15s for most actions, 60s for navigation), co-located with each tool's definition so they can't drift from the registry.
 - **Idempotent read tools** (snapshot, screenshot, text, find) are retried on timeout; **side-effecting tools** (click, type, navigate, evaluate) — and `console`/`network` (which mutate on `clear:true`) — are **never** retried, so a click can't fire twice.
 - If another process already holds port 7225, the daemon refuses to start rather than killing a process it didn't spawn — it reports the conflict so you can resolve it deliberately.
+
+### Protocol compatibility
+
+After transport authentication, the daemon and extension exchange a protocol major, their application versions, and supported capabilities before the connection becomes ready for tool calls. The protocol major and required capabilities decide compatibility; different application patch versions are allowed when that contract still matches. During the migration window, peers that do not advertise a protocol version are recognized as legacy, while an explicitly different protocol major is rejected. This lets rolling upgrades fail clearly without confusing application version numbers with wire compatibility.
 
 <details>
 <summary>Multiple Chrome profiles</summary>
@@ -434,7 +480,7 @@ browser-controller/
 │       ├── index.ts         Thin stdio MCP client (spawns daemon, multiplexes)
 │       ├── bridge.ts        Extension WS server + cross-platform port probe
 │       ├── register-tools.ts Progressive-disclosure wiring
-│       └── tools/           One file per tool (22), registry pattern
+│       └── tools/           One file per tool (25), registry pattern
 ├── extension/           Chrome extension (Manifest V3, plain JS, ES modules)
 │   ├── background.js        Wiring only (~30 lines): inject router, register events, connect
 │   ├── lib/                 state (buffers/locks/persistence), connection (WS lifecycle),
@@ -449,10 +495,41 @@ browser-controller/
 │   ├── cursor/              Rules and commands
 │   ├── skills/              Browser automation skill
 │   └── setup.mjs            One-command installer
-└── tests/               15 suites / 215 tests
+└── tests/               19 suites / 291 tests
 ```
 
 **Stack:** TypeScript (strict) · MCP SDK · WebSocket · Chrome Extension Manifest V3 · Vitest
+
+### Life of a tool call
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP client
+    participant W as wrapHandler — register-tools.ts
+    participant DC as DaemonClient — index.ts
+    participant DM as daemon — daemon.ts
+    participant BR as ExtensionBridge — bridge.ts
+    participant RT as router.js — extension
+    participant H as handler + safeExec
+
+    C->>W: tool call (JSON-RPC over stdio)
+    W->>DC: host.callTool(name, params)
+    DC->>DM: { kind: "call", id, tool, params } over the IPC socket
+    DM->>DM: rate-limit check + AbortController (per-tool timeout)
+    DM->>BR: bridge.callTool(tool, params, sessionId)
+    BR->>RT: WS { id, tool, params, sessionId, agentName }
+    RT->>RT: per-tab mutex + control shield
+    RT->>H: dispatch (observe/act: snapshot ownership checked first)
+    H->>H: chrome.scripting function injection or CDP
+    H-->>C: result returns along the same path (errors as isError results)
+```
+
+Every hop is authenticated (IPC socket and WebSocket both require the token) and bounded (per-session rate limit, per-tool timeout). The extension connection also completes the version/capability handshake before tool frames are routed. Only idempotent read tools are retried on timeout — a click can never fire twice. See [Reliability](#reliability) for the full list.
+
+### The observe/act runtime
+
+`browser_observe` / `browser_act` run on a dedicated page runtime that is CSP-safe by construction: a one-time install via `chrome.scripting` function injection (no `eval` anywhere in the path), then per-action validation of snapshot ownership, document/route identity, target semantics, geometry, visibility, and click-point occlusion. If the page changed, the agent gets a compact state error (`DOCUMENT_CHANGED`, `STALE_STATE`, …) instead of a wrong click — see [Safe Observe → Act workflow](#safe-observe--act-workflow).
 
 ## Development
 
@@ -462,16 +539,22 @@ cd browser-controller
 npm install
 npm run build
 npm test
+npm run lint
+npm run test:coverage
+npm audit --omit=dev
 ```
 
-| Command                | What it does                            |
-| ---------------------- | --------------------------------------- |
-| `npm run build`        | Compile TypeScript → `mcp-server/dist/` |
-| `npm run dev`          | Watch mode                              |
-| `npm test`             | Run the full test suite (215 tests)     |
-| `npm run typecheck`    | Type check without emitting             |
-| `npm run setup:cursor` | Install Cursor rule + command           |
-| `npm run setup:claude` | Install Claude Code `AGENTS.md`         |
+| Command | What it does |
+|---------|---------|
+| `npm run build` | Compile TypeScript → `mcp-server/dist/` |
+| `npm run dev` | Watch mode |
+| `npm test` | Run the full test suite |
+| `npm run test:coverage` | Run the suite with enforced 80% thresholds for the deterministic protocol/action/state core |
+| `npm run lint` | Lint the TypeScript server, extension, and tests with zero warnings allowed |
+| `npm run typecheck` | Type check without emitting |
+| `npm audit --omit=dev` | Check the installed production dependency graph for known vulnerabilities |
+| `npm run setup:cursor` | Install Cursor rule + command |
+| `npm run setup:claude` | Install Claude Code `AGENTS.md` |
 
 The suite covers the WebSocket bridge (including token-auth rejection and the unified error channel), the tool registry, daemon lifecycle (heartbeat eviction, rate limiting, IPC auth), per-tab concurrency (same-tab serialization + cross-tab parallelism), and extension behavior via a mocked `chrome` API (router dispatch, shield semantics, evaluate round-trip, iframe piercing, dialog rescue). CI runs the suite on Node 20 and 22, plus CodeQL and Scorecard scans.
 
@@ -484,6 +567,15 @@ npm run build
 ```
 
 Then two manual steps: **reload the extension** in `chrome://extensions` (a running service worker never picks up file changes by itself), and **restart the daemon** — it's long-lived and doesn't reload `dist/` either (kill it, or just restart your MCP client, and the next run respawns it on the new build).
+
+If the popup reports an incompatible protocol, a missing capability, or repeated handshake timeouts, the server and extension are usually from different checkouts/builds:
+
+1. Run `npm install && npm run build` in the repository used by your MCP configuration.
+2. Stop the existing daemon or all MCP clients that own it, then restart the MCP client so a daemon starts from the new `dist/` output.
+3. Open `chrome://extensions`, find Browser Controller, and click **Reload** so Chrome replaces the long-lived MV3 service worker.
+4. Reopen the popup. If authentication rather than compatibility is failing, verify the port and re-enter the enrollment secret; do not paste secrets into issue reports.
+
+Restarting only one side is not sufficient after a protocol-changing update. Application-version differences can be harmless, but an explicit protocol-major mismatch will stay disconnected until the stale daemon or extension is replaced.
 
 ---
 

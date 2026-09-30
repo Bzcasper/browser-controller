@@ -1,27 +1,31 @@
-import type { ToolDefinition } from "./types.js";
-import { navigateTool } from "./navigate.js";
-import { clickTool } from "./click.js";
-import { typeTool } from "./type.js";
-import { scrollTool } from "./scroll.js";
-import { pressKeyTool } from "./press-key.js";
-import { waitTool } from "./wait.js";
-import { snapshotTool } from "./snapshot.js";
-import { screenshotTool } from "./screenshot.js";
-import { consoleTool } from "./console.js";
-import { networkTool } from "./network.js";
-import { tabsTool } from "./tabs.js";
-import { findTool } from "./find.js";
-import { textTool } from "./text.js";
-import { hoverTool } from "./hover.js";
-import { selectTool } from "./select.js";
-import { evaluateTool } from "./evaluate.js";
-import { clickTextTool } from "./click-text.js";
-import { dialogTool } from "./dialog.js";
-import { uploadFileTool } from "./upload-file.js";
-import { runActionTool } from "./run-action.js";
-import { interceptTool } from "./intercept.js";
-import { dragTool } from "./drag.js";
-import { fillFormTool } from "./fill-form.js";
+import { z } from 'zod';
+import type { ToolDefinition } from './types.js';
+import { navigateTool } from './navigate.js';
+import { clickTool } from './click.js';
+import { typeTool } from './type.js';
+import { scrollTool } from './scroll.js';
+import { pressKeyTool } from './press-key.js';
+import { waitTool } from './wait.js';
+import { snapshotTool } from './snapshot.js';
+import { screenshotTool } from './screenshot.js';
+import { consoleTool } from './console.js';
+import { networkTool } from './network.js';
+import { tabsTool } from './tabs.js';
+import { findTool } from './find.js';
+import { textTool } from './text.js';
+import { hoverTool } from './hover.js';
+import { selectTool } from './select.js';
+import { evaluateTool } from './evaluate.js';
+import { clickTextTool } from './click-text.js';
+import { dialogTool } from './dialog.js';
+import { uploadFileTool } from './upload-file.js';
+import { runActionTool } from './run-action.js';
+import { interceptTool } from './intercept.js';
+import { dragTool } from './drag.js';
+import { fillFormTool } from './fill-form.js';
+import { observeTool } from './observe.js';
+import { actTool } from './act.js';
+import { batchTool } from './batch.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -47,11 +51,42 @@ export const allTools: ToolDefinition[] = [
   dragTool,
   fillFormTool,
   interceptTool,
+  observeTool,
+  actTool,
+  batchTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(
   allTools.map((t) => [t.name, t]),
 );
+
+export type ToolCapability = 'read' | 'write' | 'mixed';
+
+export interface ToolManifestEntry {
+  name: string;
+  summary: string;
+  description: string;
+  inputSchema: unknown;
+  timeoutMs: number | undefined;
+  idempotent: boolean;
+  capability: ToolCapability;
+}
+
+function capabilityOf(tool: ToolDefinition): ToolCapability {
+  if (tool.idempotent === true) return 'read';
+  if (tool.name === 'browser_console' || tool.name === 'browser_network' || tool.name === 'browser_tabs') return 'mixed';
+  return 'write';
+}
+
+export const toolManifest: ToolManifestEntry[] = allTools.map((tool) => ({
+  name: tool.name,
+  summary: tool.summary,
+  description: tool.description,
+  inputSchema: z.toJSONSchema(tool.inputSchema),
+  timeoutMs: tool.timeoutMs,
+  idempotent: tool.idempotent === true,
+  capability: capabilityOf(tool),
+}));
 
 /**
  * Whether a tool is safe to retry on timeout, derived from each tool's
