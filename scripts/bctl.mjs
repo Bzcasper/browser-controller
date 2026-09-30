@@ -7,7 +7,7 @@
  *   bctl connect [agent…|all]   register the MCP server with agents (no args = show state)
  *   bctl doctor           read-only health check (exit 1 on failures)
  *   bctl call <tool> [json]     call one browser tool from the shell
- *   bctl install-service [--bridge] | install-launcher | install-cli
+ *   bctl install-service [--bridge] | install-launcher | install-cli | install-skills
  *
  * Systemd owns the daemon when the user unit is installed; otherwise the
  * plain scripts/daemon.mjs lifecycle is used. Never both (they fight for the lock).
@@ -261,6 +261,25 @@ function installCli() {
   fs.chmodSync(SELF, 0o755);
   ok(`installed ${link}`);
 }
+function installSkills() {
+  const src = path.join(ROOT, 'skills');
+  if (!fs.existsSync(src)) { warn('no skills/ directory in the repo'); return; }
+  const names = fs.readdirSync(src).filter((n) => fs.existsSync(path.join(src, n, 'SKILL.md')));
+  const targets = ['.agents', '.claude', '.codex'].map((d) => path.join(HOME, d, 'skills')).filter((d) => fs.existsSync(path.dirname(d)));
+  for (const dir of targets) {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const n of names) {
+      const link = path.join(dir, n);
+      try {
+        const st = fs.lstatSync(link);
+        if (!st.isSymbolicLink()) { warn(`${link} exists and is not a symlink; left alone`); continue; }
+        fs.unlinkSync(link);
+      } catch {}
+      fs.symlinkSync(path.join(src, n), link);
+    }
+    ok(`skills linked into ${dir} (${names.join(', ')})`);
+  }
+}
 function installLauncher() {
   const dir = path.join(HOME, '.local', 'share', 'applications');
   fs.mkdirSync(dir, { recursive: true });
@@ -297,6 +316,7 @@ async function setup() {
   console.log('');
   connect(['all']);
   installLauncher();
+  installSkills();
   console.log('');
   await doctor();
 }
@@ -369,7 +389,8 @@ const HELP = `bctl — Browser Controller control
   bctl connect [agent…|all]  register with ${Object.keys(AGENTS).join(', ')} (no args: show state)
   bctl doctor                health check (exit 1 on problems)
   bctl call <tool> '<json>'  call a browser tool from the shell
-  bctl install-service [--bridge] | install-launcher | install-cli`;
+  bctl install-service [--bridge] | install-launcher | install-cli
+  bctl install-skills        link the agent skills in skills/ into ~/.agents, ~/.claude, ~/.codex`;
 const [cmd = 'help', ...rest] = process.argv.slice(2);
 try {
   if (cmd === 'setup') await setup();
@@ -383,5 +404,6 @@ try {
   else if (cmd === 'install-service') installService(rest.includes('--bridge'));
   else if (cmd === 'install-launcher') installLauncher();
   else if (cmd === 'install-cli') installCli();
+  else if (cmd === 'install-skills') installSkills();
   else console.log(HELP);
 } catch (e) { bad(e.message); process.exitCode = 1; }

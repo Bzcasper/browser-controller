@@ -102,6 +102,21 @@ export async function detachCdp(tabId) {
   try { await chrome.debugger.detach({ tabId }); } catch { /* already gone */ }
 }
 
+/** Keep the tab's session attached (no idle detach) until unpinCdp — for long-lived captures. */
+export function pinCdp(tabId) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  s.busy++;
+  clearTimeout(s.timer);
+}
+
+export function unpinCdp(tabId) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  s.busy = Math.max(0, s.busy - 1);
+  armIdle(tabId);
+}
+
 export function hasCdp(tabId) {
   return sessions.has(tabId);
 }

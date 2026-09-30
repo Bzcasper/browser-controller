@@ -35,6 +35,7 @@ describe("Tool Registry", () => {
     "browser_drag",
     "browser_fill_form",
     "browser_intercept",
+    "browser_capture",
     "browser_observe",
     "browser_act",
     "browser_batch",

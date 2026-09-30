@@ -21,6 +21,7 @@ import { dialogTool } from './dialog.js';
 import { uploadFileTool } from './upload-file.js';
 import { runActionTool } from './run-action.js';
 import { interceptTool } from './intercept.js';
+import { captureTool } from './capture.js';
 import { dragTool } from './drag.js';
 import { fillFormTool } from './fill-form.js';
 import { observeTool } from './observe.js';
@@ -51,6 +52,7 @@ export const allTools: ToolDefinition[] = [
   dragTool,
   fillFormTool,
   interceptTool,
+  captureTool,
   observeTool,
   actTool,
   batchTool,

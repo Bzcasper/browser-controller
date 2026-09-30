@@ -47,6 +47,7 @@ import {
 } from "../handlers/tabs.js";
 import { handleRunAction, handleUploadFile } from "../handlers/cdp.js";
 import { handleIntercept } from "../handlers/intercept.js";
+import { handleCapture } from "../handlers/capture.js";
 import { handleObserve, handleAct } from "../handlers/agent-api.js";
 
 // sessionId arrives as a first-class top-level field on the WS message (audit
@@ -94,6 +95,7 @@ const HANDLERS = {
   browser_find: handleFind,
   browser_text: handleGetPageText,
   browser_intercept: handleIntercept,
+  browser_capture: handleCapture,
   browser_observe: handleObserve,
   browser_act: handleAct,
 };

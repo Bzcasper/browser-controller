@@ -643,3 +643,9 @@ See [SECURITY.md](SECURITY.md) — localhost-only architecture, token + enrollme
 ## License
 
 [MIT](LICENSE)
+
+## Agent skills and API capture (fork additions)
+
+- `bctl install-skills` links `skills/browser-controller-{setup,troubleshoot,api-capture}` into `~/.agents`, `~/.claude` and `~/.codex` skills.
+- `prompts/browser-controller-agent.md` is a hand-off prompt for an agent that sets up, verifies and troubleshoots the whole stack.
+- `browser_capture` records a tab's API traffic with headers, request/response bodies, WebSocket frames and SSE events (CDP), with live mock/header/block/redirect rules, endpoint inventory, HAR export and in-tab replay. Secrets are redacted on every read unless `revealSecrets:true`.

@@ -106,7 +106,9 @@ const TOOL_GUIDANCE: Record<string, string> = {
   browser_handle_dialog:
     'Use to handle or dismiss a JS dialog (alert/confirm/prompt) that blocks the page.',
   browser_intercept:
-    "Use to block/redirect/mock network traffic per tab (rules by URL regex) or export a redacted HAR. Check the enforcement flag — capture-only means rules are ledger-marked, not applied.",
+    "Use for lightweight per-tab request rules (block/redirect via declarativeNetRequest) and metadata-only HAR. For bodies, headers, real mocks or replay use browser_capture. Check the enforcement flag — capture-only means rules are ledger-marked, not applied.",
+  browser_capture:
+    "Use to record a tab's API traffic WITH headers, request/response bodies, WebSocket frames and SSE events; then list/get/summarize endpoints, export HAR, replay a call, or mock/rewrite requests live. Secrets are redacted unless revealSecrets:true.",
   browser_observe:
     'Use as the primary AI-facing page read before browser_act. It returns compact, session-owned refs with allowed actions and geometry.',
   browser_act:
