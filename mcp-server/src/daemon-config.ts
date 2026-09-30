@@ -90,7 +90,7 @@ export function acquireDaemonLock(): void {
       if (ownerPid > 0) {
         try { process.kill(ownerPid, 0); alive = true; } catch { /* not running */ }
       }
-      if (alive) throw new Error(`Browser Controller daemon lock is held by live process ${ownerPid}`);
+      if (alive) throw new Error(`Browser Controller daemon lock is held by live process ${ownerPid}`, { cause: err });
       try { fs.unlinkSync(DAEMON_LOCK_FILE); } catch { /* raced with cleanup */ }
     }
   }
