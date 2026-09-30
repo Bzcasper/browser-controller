@@ -27,6 +27,7 @@ import { actTool } from './act.js';
 import { batchTool } from './batch.js';
 import { resizeWindowTool } from './resize-window.js';
 import { gifTool } from './gif.js';
+import { listBrowsersTool, selectBrowserTool } from './browsers.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -56,6 +57,8 @@ export const allTools: ToolDefinition[] = [
   batchTool,
   resizeWindowTool,
   gifTool,
+  listBrowsersTool,
+  selectBrowserTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(
