@@ -456,6 +456,8 @@ class Daemon {
         extension: { connected: this.bridge.isConnected(), since: null },
         agents: this.agents(),
         uptimeMs: Date.now() - this.startedAt,
+        // Lets lifecycle tools confirm a pid really is this daemon.
+        pid: process.pid,
       };
     }
     return undefined; // bridge returns 404

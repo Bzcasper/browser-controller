@@ -6,7 +6,7 @@
  */
 import { resolveTab } from "../lib/page-exec.js";
 import { getTabBuffer, networkByTab, PER_TAB_CAP } from "../lib/state.js";
-import { validateRuleSet, evaluateRules, scopeKey } from "../lib/intercept.js";
+import { validateRuleSet, matchRule, scopeKey } from "../lib/intercept.js";
 
 /** scopeKey -> rules[] */
 export const rulesByScope = new Map();
@@ -23,84 +23,153 @@ function allRules() {
   return out;
 }
 
-function rulesForTab(tabId) {
+/** Rules that apply to a tab, each with the scope it is stored under. */
+function scopedRulesForTab(tabId) {
   const out = [];
   for (const [scope, rules] of rulesByScope) {
-    if (scope === "global") {
-      out.push(...rules);
-      continue;
+    const ids = scope === "global" ? null : scope.replace(/^tabs:/, "").split(",").map(Number);
+    if (ids === null || (tabId != null && ids.includes(tabId))) {
+      for (const rule of rules) out.push({ scope, rule });
     }
-    const ids = scope
-      .replace(/^tabs:/, "")
-      .split(",")
-      .map(Number);
-    if (tabId != null && ids.includes(tabId)) out.push(...rules);
   }
   return out;
 }
 
+/** What Chrome enforces right now (capture-only without DNR). */
+function currentEnforcement() {
+  if (!dnrAvailable()) return "capture-only";
+  return rulesByScope.size === 0 ? "full" : lastSync.enforcement;
+}
+
 function dnrAvailable() {
   try {
-    return !!globalThis.chrome?.declarativeNetRequest?.updateDynamicRules;
+    return !!globalThis.chrome?.declarativeNetRequest?.updateSessionRules;
   } catch {
     return false;
   }
 }
 
-/** Best-effort DNR dynamic-rule sync; never throws (degrades to capture-only). */
-async function syncDnr() {
-  if (!dnrAvailable())
-    return { ok: false, enforcement: "capture-only", reason: "no-dnr" };
-  try {
-    const rules = allRules().filter(
-      (r) =>
-        r.enabled !== false &&
-        (r.action === "block" || r.action === "redirect"),
-    );
-    const dynamic = rules.slice(0, 50).map((r, i) => ({
-      id: 1000 + i,
-      priority: 1,
-      action:
-        r.action === "block"
-          ? { type: "block" }
-          : { type: "redirect", redirect: { url: r.redirectUrl } },
-      condition: { regexFilter: r.match, resourceTypes: undefined },
-    }));
-    await globalThis.chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: dynamic.map((d) => d.id),
-      addRules: dynamic,
-    });
-    return { ok: true, enforcement: "full" };
-  } catch (err) {
+/** Our session-rule id range (other extension code may use other ids). */
+const DNR_ID_BASE = 1000;
+const DNR_ID_MAX = 5999;
+/** Chrome resource types a DNR condition accepts. */
+const DNR_TYPES = new Set([
+  "main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object",
+  "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other",
+]);
+
+/**
+ * Result of the last sync: which stored rules Chrome actually enforces.
+ * installed: Map<"scope|ruleId", dnrId>; unsupported: [{id, scope, action, reason}].
+ */
+let lastSync = { enforcement: "capture-only", installed: new Map(), unsupported: [], reason: "not synced" };
+
+/** Tab ids a stored scope applies to (null = every tab). */
+function scopeTabs(scope) {
+  if (scope === "global") return null;
+  return [...new Set(scope.replace(/^tabs:/, "").split(",").map(Number).filter(Number.isInteger))];
+}
+
+/** One stored rule → a DNR session rule, or {reason} when Chrome can't enforce it. */
+function toDnrRule(rule, scope, id) {
+  const condition = { regexFilter: rule.match };
+  const tabs = rule.tabIds && rule.tabIds.length ? [...new Set(rule.tabIds)] : scopeTabs(scope);
+  if (tabs) condition.tabIds = tabs; // tab scoping: session rules only
+  if (rule.types && rule.types.length) {
+    const types = rule.types.filter((t) => DNR_TYPES.has(t));
+    if (types.length === 0) return { reason: `no enforceable resource type in [${rule.types.join(", ")}]` };
+    condition.resourceTypes = types;
+  }
+  if (rule.action === "block") return { rule: { id, priority: 1, action: { type: "block" }, condition } };
+  if (rule.action === "redirect") {
+    return { rule: { id, priority: 1, action: { type: "redirect", redirect: { url: rule.redirectUrl } }, condition } };
+  }
+  if (rule.action === "header") {
+    const headers = Object.entries(rule.headers || {});
+    if (headers.length === 0) return { reason: "header rule has no headers" };
     return {
-      ok: false,
-      enforcement: "capture-only",
-      reason: err?.message || String(err),
+      rule: {
+        id, priority: 1, condition,
+        action: {
+          type: "modifyHeaders",
+          // Request headers are set (added or replaced) on matching requests.
+          requestHeaders: headers.map(([header, value]) => ({ header, operation: "set", value: String(value) })),
+        },
+      },
     };
   }
+  if (rule.action === "mock") {
+    return { reason: "mock responses cannot be enforced with declarativeNetRequest (ledger-only)" };
+  }
+  return { reason: null }; // log: capture-only by design
+}
+
+/**
+ * Sync every enabled rule to Chrome as SESSION rules (the only kind that can
+ * be tab-scoped): remove every session rule we installed before — including
+ * after a clear, or from a previous service worker — then add the current
+ * set. Never throws; degrades to capture-only.
+ */
+async function syncDnr() {
+  if (!dnrAvailable()) {
+    lastSync = { enforcement: "capture-only", installed: new Map(), unsupported: [], reason: "no-dnr" };
+    return lastSync;
+  }
+  const dnr = globalThis.chrome.declarativeNetRequest;
+  const installed = new Map();
+  const unsupported = [];
+  const addRules = [];
+  let next = DNR_ID_BASE;
+  for (const [scope, rules] of rulesByScope) {
+    for (const r of rules) {
+      if (r.enabled === false || r.action === "log") continue;
+      if (next > DNR_ID_MAX) {
+        unsupported.push({ id: r.id, scope, action: r.action, reason: "too many rules to enforce" });
+        continue;
+      }
+      const out = toDnrRule(r, scope, next);
+      if (!out.rule) {
+        if (out.reason) unsupported.push({ id: r.id, scope, action: r.action, reason: out.reason });
+        continue;
+      }
+      addRules.push(out.rule);
+      installed.set(`${scope}|${r.id}`, next);
+      next++;
+    }
+  }
+  try {
+    const existing = (await dnr.getSessionRules()) || [];
+    const removeRuleIds = existing.map((x) => x.id).filter((id) => id >= DNR_ID_BASE && id <= DNR_ID_MAX);
+    await dnr.updateSessionRules({ removeRuleIds, addRules });
+    lastSync = {
+      enforcement: unsupported.length ? "partial" : "full",
+      installed,
+      unsupported,
+      reason: unsupported.length ? "some rules are ledger-only (see unsupported)" : undefined,
+    };
+  } catch (err) {
+    lastSync = { enforcement: "capture-only", installed: new Map(), unsupported, reason: err?.message || String(err) };
+  }
+  return lastSync;
+}
+
+/** Is this stored rule actually installed in Chrome? */
+function isEnforced(scope, ruleId) {
+  return lastSync.installed.has(`${scope}|${ruleId}`);
 }
 
 /** Enrich one network capture with rule matches (called from events.js; never throws). */
 export function enrichCapture(tabId, entry) {
   try {
-    const matches = evaluateRules(rulesForTab(tabId), {
-      url: entry.url,
-      type: entry.type,
-      tabId,
-    });
+    const req = { url: entry.url, type: entry.type, tabId };
+    const matches = scopedRulesForTab(tabId).filter((x) => matchRule(x.rule, req));
     if (matches.length === 0) return entry;
-    const full = dnrAvailable();
     entry.intercept = {
-      matchedRuleIds: matches.map((m, i) => m.id ?? `r${i + 1}`),
+      matchedRuleIds: matches.map((m, i) => m.rule.id ?? `r${i + 1}`),
       applied: matches.map((m, i) => ({
-        ruleId: m.id ?? `r${i + 1}`,
-        outcome:
-          full &&
-          (m.action === "block" ||
-            m.action === "redirect" ||
-            m.action === "header")
-            ? "enforced"
-            : "ledger-only",
+        ruleId: m.rule.id ?? `r${i + 1}`,
+        // "enforced" only when Chrome really has the rule installed.
+        outcome: isEnforced(m.scope, m.rule.id) ? "enforced" : "ledger-only",
       })),
     };
     const ledger = getTabBuffer(interceptLedgerByTab, tabId);
@@ -139,7 +208,7 @@ function filterByPattern(entries, filter) {
   try {
     re = new RegExp(filter);
   } catch (err) {
-    throw new Error(`Invalid filter regex: ${err?.message || err}`);
+    throw new Error(`Invalid filter regex: ${err?.message || err}`, { cause: err });
   }
   return entries.filter((e) => re.test(e.url));
 }
@@ -175,22 +244,29 @@ export async function handleIntercept(params) {
       const scope = scopeKey(
         withIds.flatMap((r) => r.tabIds ?? (tabId != null ? [tabId] : [])),
       );
-      rulesByScope.set(scope, withIds);
+      // Replacing a scope's rules replaces them (an empty set removes the scope).
+      if (withIds.length) rulesByScope.set(scope, withIds);
+      else rulesByScope.delete(scope);
       const sync = await syncDnr();
+      const unsupported = sync.unsupported.filter((u) => u.scope === scope);
       return {
         success: true,
         enforcement: sync.enforcement,
-        reason: sync.reason,
+        ...(sync.reason ? { reason: sync.reason } : {}),
         scope,
         ruleCount: withIds.length,
+        enforced: withIds.filter((r) => isEnforced(scope, r.id)).length,
+        ...(unsupported.length ? { unsupported } : {}),
       };
     }
     case "list-rules": {
-      const out = tabId != null ? rulesForTab(tabId) : allRules();
+      const scoped = tabId != null
+        ? scopedRulesForTab(tabId)
+        : [...rulesByScope].flatMap(([scope, rules]) => rules.map((rule) => ({ scope, rule })));
       return {
         success: true,
-        enforcement: dnrAvailable() ? "full" : "capture-only",
-        rules: out,
+        enforcement: currentEnforcement(),
+        rules: scoped.map(({ scope, rule }) => ({ ...rule, scope, enforced: isEnforced(scope, rule.id) })),
       };
     }
     case "clear-rules": {
@@ -198,11 +274,7 @@ export async function handleIntercept(params) {
         let cleared = 0;
         for (const [scope, scopeRules] of [...rulesByScope]) {
           if (scope === "global") continue;
-          const ids = scope
-            .replace(/^tabs:/, "")
-            .split(",")
-            .map(Number);
-          if (ids.includes(tabId)) {
+          if (scopeTabs(scope).includes(tabId)) {
             cleared += scopeRules.length;
             rulesByScope.delete(scope);
           }
@@ -229,7 +301,7 @@ export async function handleIntercept(params) {
         entries = entries.slice(-limit);
       return {
         success: true,
-        enforcement: dnrAvailable() ? "full" : "capture-only",
+        enforcement: currentEnforcement(),
         captures: entries,
       };
     }

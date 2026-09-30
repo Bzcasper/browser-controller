@@ -21,7 +21,7 @@ export const interceptTool: ToolDefinition = {
   name: "browser_intercept",
   summary: "Manage request intercept rules and captures per tab",
   description:
-    "Capture, block, redirect, or mock network traffic per tab. Actions: set-rules, list-rules, clear-rules, list-captures, export-har.",
+    "Capture, block, redirect, or add request headers to network traffic per tab (Chrome session rules). Actions: set-rules, list-rules, clear-rules, list-captures, export-har. 'mock' and 'log' rules are recorded in the capture ledger only — Chrome cannot fake response bodies — and set-rules reports them under unsupported with enforcement 'partial'.",
   inputSchema: z.object({
     tabId: z
       .number()

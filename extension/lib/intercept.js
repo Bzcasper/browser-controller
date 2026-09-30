@@ -36,7 +36,7 @@ export function validateRule(rule, index = 0) {
   try {
     new RegExp(rule.match);
   } catch (err) {
-    throw new Error(`${where}: invalid match regex: ${err?.message || err}`);
+    throw new Error(`${where}: invalid match regex: ${err?.message || err}`, { cause: err });
   }
   if (!VALID_ACTIONS.has(rule.action)) {
     throw new Error(
@@ -94,5 +94,6 @@ export function evaluateRules(rules, req) {
 /** Scope key for storage: global or sorted tab list. */
 export function scopeKey(tabIds) {
   if (!tabIds || tabIds.length === 0) return "global";
-  return `tabs:${[...tabIds].sort((a, b) => a - b).join(",")}`;
+  // Deduplicated: two rules for tab 15 are scope "tabs:15", not "tabs:15,15".
+  return `tabs:${[...new Set(tabIds)].sort((a, b) => a - b).join(",")}`;
 }
