@@ -2,7 +2,7 @@
  * Page-execution primitives (extracted from background.js): tab resolution,
  * the locator guard, and safeExec. Everything a handler needs to touch a page.
  */
-import { fallbackByTab, wedgedTabs } from './state.js';
+import { fallbackByTab, wedgedTabs, tabLocks, persistSessionState } from './state.js';
 import { PAGE_DOM_INSTALL, PAGE_DOM_VERSION } from './page-dom.js';
 
 /**
@@ -96,10 +96,21 @@ export async function probeResponsive(tabId, ms = WEDGE_PROBE_MS) {
  * then close the frozen one. Returns the new tab, or null when the tab was
  * not wedged. Callers report `replacedTabId` so the agent switches ids.
  */
-export async function replaceFrozenTab(tab, url) {
+export async function replaceFrozenTab(tab, url, sessionId = null) {
   if (!wedgedTabs.has(tab.id)) return null;
+  // Defence in depth (the router checks too): never replace another session's tab.
+  const owner = tabLocks.owner(tab.id);
+  if (owner && owner !== sessionId) {
+    throw new Error(`Tab ${tab.id} is locked by ${owner} — unlock it from that session first.`);
+  }
   const fresh = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index, url: url || 'about:blank', active: !!tab.active });
   wedgedTabs.delete(tab.id);
+  // The replacement keeps the caller's lock on the tab it is replacing.
+  if (owner) {
+    tabLocks.release(tab.id);
+    tabLocks.lock(fresh.id, owner);
+    persistSessionState();
+  }
   chrome.tabs.remove(tab.id).catch(() => { /* already gone */ });
   return fresh;
 }

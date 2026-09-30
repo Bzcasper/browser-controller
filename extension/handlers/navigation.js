@@ -18,7 +18,7 @@ export async function getActiveTab() {
   return tab;
 }
 
-export async function handleNavigate(params, _sessionId, _agentName, signal) {
+export async function handleNavigate(params, sessionId, _agentName, signal) {
   let { url } = params;
   const { waitUntil = 'load', tabId, snapshot: wantSnapshot = true } = params;
   // navigate is the one page tool allowed to omit tabId → active tab fallback.
@@ -37,7 +37,7 @@ export async function handleNavigate(params, _sessionId, _agentName, signal) {
 
   // A frozen page (TAB_WEDGED) would hold the navigation hostage: replace the tab.
   let replacedTabId = null;
-  const fresh = !historyStep ? await replaceFrozenTab(tab, null) : null;
+  const fresh = !historyStep ? await replaceFrozenTab(tab, null, sessionId) : null;
   if (fresh) { replacedTabId = tab.id; tab = fresh; }
   const currentTab = await chrome.tabs.get(tab.id);
   const hashOnly = !historyStep && isHashOnlyChange(currentTab.url, url);

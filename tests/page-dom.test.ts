@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { installFakePage, type FakeDocument } from './helpers/fake-dom.js';
+import { installFakePage, installFakeFrame, type FakeDocument } from './helpers/fake-dom.js';
 
 // chrome mock: executeScript runs the page function in-process against the fake page.
 (globalThis as any).chrome = {
@@ -68,6 +68,19 @@ describe('shared page DOM runtime (resolver)', () => {
     expect(res).toMatchObject({ el: like2, via: 'fallback' });
     // Re-bound: the next lookup is a direct registry hit.
     expect(D().resolve('old', null, null)).toMatchObject({ el: like2, via: 'ref' });
+  });
+
+  it('an element inside an invisible iframe is not visible (and wait(visible) does not pass)', async () => {
+    const frame = doc.el('iframe');
+    const inner = installFakeFrame(frame);
+    const btn = inner.el('button', { id: 'in-frame' }, 'Go');
+    inner.body.append(btn);
+    doc.body.append(frame);
+    expect(D().isVisible(btn)).toBe(true);
+    frame.hidden = true; // e.g. opacity:0 / display:none on the <iframe>
+    expect(D().isVisible(btn)).toBe(false);
+    const res = await handleWait({ tabId: 1, selector: '#in-frame', timeout: 300 });
+    expect(res.success).toBe(false);
   });
 
   it('names come from textContent (not CSS-transformed innerText) and include shadow text', () => {

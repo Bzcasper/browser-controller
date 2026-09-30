@@ -28,6 +28,29 @@ function withTimeout(promise, ms, what) {
   ]).finally(() => clearTimeout(timer));
 }
 
+/** Pixel size of a base64 PNG/JPEG (null if it can't be read). */
+export function imageSize(b64) {
+  let bin;
+  try { bin = atob(String(b64).slice(0, 87_384)); } catch { return null; }
+  const at = (i) => bin.charCodeAt(i);
+  if (bin.length > 24 && at(0) === 0x89 && bin.slice(1, 4) === 'PNG') {
+    return { width: ((at(16) << 24) | (at(17) << 16) | (at(18) << 8) | at(19)) >>> 0, height: ((at(20) << 24) | (at(21) << 16) | (at(22) << 8) | at(23)) >>> 0 };
+  }
+  if (at(0) === 0xff && at(1) === 0xd8) {
+    let i = 2;
+    while (i + 9 < bin.length) {
+      if (at(i) !== 0xff) { i++; continue; }
+      const marker = at(i + 1);
+      const len = (at(i + 2) << 8) | at(i + 3);
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+        return { width: (at(i + 7) << 8) | at(i + 8), height: (at(i + 5) << 8) | at(i + 6) };
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
 /**
  * CDP capture (Page.captureScreenshot): works on a tab that is NOT the active
  * one in its window, so the user's view is never switched, and can downscale
@@ -55,7 +78,10 @@ async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage
       height = Math.max(1, Math.min(region.height, vv.clientHeight - originY));
     }
     let s = Math.min(region ? 4 : 1, Math.max(0.05, scale ?? (region ? 2 : 1)));
-    if (maxWidth && width * s > maxWidth) s = maxWidth / width;
+    // The capture comes out at clip.scale × devicePixelRatio (device pixels):
+    // the deprecated device-pixel metrics against the CSS ones give the ratio.
+    const dpr = metrics.visualViewport?.clientWidth > 0 ? metrics.visualViewport.clientWidth / vv.clientWidth : 1;
+    if (maxWidth && width * s * dpr > maxWidth) s = maxWidth / (width * dpr);
     const { data } = await withTimeout(send('Page.captureScreenshot', {
       format,
       ...(format === 'jpeg' ? { quality } : {}),
@@ -68,13 +94,18 @@ async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage
     }), CDP_CAPTURE_TIMEOUT_MS, 'Page.captureScreenshot');
     // How image pixels map to the viewport coordinates click/hover/scroll take:
     // viewportX = origin[0] + imageX / scale (fullPage: page coordinates instead).
+    // The real image size is the ground truth (it includes the device pixel
+    // ratio: an 800 px viewport at DPR 2 is a 1600 px image, scale 2).
+    const size = imageSize(data);
+    const imgW = size?.width || Math.round(width * s * dpr);
+    const imgH = size?.height || Math.round(height * s * dpr);
     const frame = {
-      scale: Math.round(s * 1000) / 1000,
+      scale: Math.round((imgW / width) * 1000) / 1000,
       origin: [Math.round(originX), Math.round(originY)],
       viewport: [Math.round(vv.clientWidth), Math.round(vv.clientHeight)],
       ...(fullPage && !region ? { page: true, scrollY: Math.round(vv.pageY) } : {}),
     };
-    return { data, width: Math.round(width * s), height: Math.round(height * s), frame };
+    return { data, width: imgW, height: imgH, frame };
   });
 }
 
@@ -230,7 +261,7 @@ export async function handleTabs(params, sessionId) {
       }
       const current = await resolveTab(tabId);
       // A frozen page would block the reload until it frees up: replace the tab.
-      const fresh = await replaceFrozenTab(current, current.url);
+      const fresh = await replaceFrozenTab(current, current.url, sessionId);
       if (fresh) {
         return { success: true, reloaded: fresh.id, replacedTabId: tabId, url: current.url, note: `tab ${tabId} was frozen and has been replaced by tab ${fresh.id}` };
       }

@@ -78,6 +78,10 @@ export function PAGE_DOM_INSTALL(version) {
   /** Composed-ancestor aware: display/visibility/opacity/content-visibility + a real box. */
   function isVisible(el) {
     if (!connected(el)) return false;
+    // An element in a hidden/transparent/zero-size iframe is not visible either.
+    let frameEl = null;
+    try { frameEl = el.ownerDocument && el.ownerDocument.defaultView ? el.ownerDocument.defaultView.frameElement : null; } catch { frameEl = null; }
+    if (frameEl && !isVisible(frameEl)) return false;
     try {
       if (typeof el.checkVisibility === 'function'
         && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, contentVisibilityAuto: true })) return false;

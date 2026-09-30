@@ -132,7 +132,7 @@ export class FakeDocument {
   title = 'Fixture';
   activeElement: FakeElement | null = null;
   body: FakeElement;
-  defaultView = { getComputedStyle: (el: FakeElement) => ({ display: el.attrs.get('style')?.includes('display:contents') ? 'contents' : el.isHiddenInTree ? 'none' : 'block', visibility: 'visible', opacity: '1' }), frameElement: null };
+  defaultView: { getComputedStyle: (el: FakeElement) => Record<string, string>; frameElement: FakeElement | null } = { getComputedStyle: (el: FakeElement) => ({ display: el.attrs.get('style')?.includes('display:contents') ? 'contents' : el.isHiddenInTree ? 'none' : 'block', visibility: 'visible', opacity: '1' }), frameElement: null };
   constructor() { this.body = new FakeElement(this, 'BODY'); }
   el(tag: string, attrs: Record<string, string> = {}, ...kids: Array<FakeElement | string>) {
     return new FakeElement(this, tag, attrs).append(...kids);
@@ -142,6 +142,14 @@ export class FakeDocument {
   getElementById(id: string) { return this.querySelector(`#${id}`); }
   elementFromPoint() { return null; }
   createTreeWalker() { throw new Error('fake-dom: tree walkers are not supported'); }
+}
+
+/** Give an <iframe> FakeElement its own same-origin document. */
+export function installFakeFrame(frame: FakeElement): FakeDocument {
+  const inner = new FakeDocument();
+  inner.defaultView.frameElement = frame;
+  (frame as unknown as { contentDocument: FakeDocument }).contentDocument = inner;
+  return inner;
 }
 
 /** Install a fresh FakeDocument as the page globals the runtime reads. */

@@ -187,6 +187,16 @@ export async function handleMessage(msg) {
     || tool === 'browser_handle_dialog'
     || (tool === 'browser_navigate' && wedgedTabs.has(tabId));
 
+  // Skipping the queue must not skip lock ownership: runOnTab enforces it for
+  // queued calls, so the frozen-tab navigate path checks it here.
+  if (tool === 'browser_navigate' && bypassesMutex) {
+    const owner = tabLocks.owner(tabId);
+    if (owner && owner !== sessionId) {
+      sendResponse(id, { success: false, error: `Tab ${tabId} is locked by ${owner} — unlock it from that session first.` });
+      return;
+    }
+  }
+
   // Tools without a tabId (tabs list/create, console-less) run directly.
   if (tabId == null || bypassesMutex) {
     const controller = new AbortController();

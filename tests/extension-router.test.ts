@@ -41,7 +41,7 @@ const tabStore = new Map<number, { id: number; windowId: number; url: string; ti
 };
 
 const { handleMessage, dispatchedTools } = await import('../extension/lib/router.js');
-const { tabLocks, observationSnapshots } = await import('../extension/lib/state.js');
+const { tabLocks, observationSnapshots, wedgedTabs } = await import('../extension/lib/state.js');
 const { allTools } = await import('../mcp-server/src/tools/index.js');
 
 function lastFrame(): Record<string, unknown> {
@@ -81,6 +81,37 @@ describe('extension router (handleMessage)', () => {
     expect(frame.success).toBe(false);
     expect(frame.error).toBe('Need selector, text, urlIncludes or delay');
     expect(frame.result).toEqual({ success: false, error: 'Need selector, text, urlIncludes or delay' });
+  });
+
+  it('frozen-tab navigate cannot replace a tab locked by another session', async () => {
+    const created: unknown[] = [];
+    const removed: number[] = [];
+    (globalThis as any).chrome.tabs.create = async (o: unknown) => { created.push(o); return { id: 99 }; };
+    (globalThis as any).chrome.tabs.remove = async (id: number) => { removed.push(id); };
+    tabLocks.lock(3, 'session-a');
+    wedgedTabs.set(3, Date.now());
+    await handleMessage({ id: 'fz1', tool: 'browser_navigate', params: { tabId: 3, url: 'https://example.com/x', snapshot: false }, sessionId: 'session-b' });
+    await flush();
+    expect(lastFrame()).toMatchObject({ id: 'fz1', success: false });
+    expect(String(lastFrame().error)).toMatch(/locked by session-a/);
+    expect(created).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(tabLocks.owner(3)).toBe('session-a');
+    wedgedTabs.clear();
+  });
+
+  it('the lock owner recovering its own frozen tab keeps the lock on the replacement', async () => {
+    const { replaceFrozenTab } = await import('../extension/lib/page-exec.js');
+    (globalThis as any).chrome.tabs.create = async () => ({ id: 99 });
+    (globalThis as any).chrome.tabs.remove = async () => {};
+    tabLocks.lock(3, 'session-a');
+    wedgedTabs.set(3, Date.now());
+    await expect(replaceFrozenTab({ id: 3, windowId: 1, index: 0, active: true }, null, 'session-b')).rejects.toThrow(/locked by session-a/);
+    const fresh = await replaceFrozenTab({ id: 3, windowId: 1, index: 0, active: true }, null, 'session-a');
+    expect(fresh.id).toBe(99);
+    expect(tabLocks.owner(99)).toBe('session-a');
+    expect(tabLocks.owner(3)).toBeUndefined();
+    wedgedTabs.clear();
   });
 
   it('converts a THROWN handler error into a wire-level error', async () => {
