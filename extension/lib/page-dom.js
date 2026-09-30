@@ -79,7 +79,7 @@ export function PAGE_DOM_INSTALL(version) {
   function isVisible(el) {
     if (!connected(el)) return false;
     // An element in a hidden/transparent/zero-size iframe is not visible either.
-    let frameEl = null;
+    let frameEl;
     try { frameEl = el.ownerDocument && el.ownerDocument.defaultView ? el.ownerDocument.defaultView.frameElement : null; } catch { frameEl = null; }
     if (frameEl && !isVisible(frameEl)) return false;
     try {
