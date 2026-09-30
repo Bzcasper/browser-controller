@@ -19,7 +19,7 @@ export async function resolveTab(tabId) {
     if (!tab) throw new Error(`Tab ${tabId} not found, call browser_tabs list first.`);
     return tab;
   } catch (err) {
-    throw new Error(`Tab ${tabId} not found, call browser_tabs list first. (${err.message || err})`);
+    throw new Error(`Tab ${tabId} not found, call browser_tabs list first. (${err.message || err})`, { cause: err });
   }
 }
 
@@ -154,7 +154,7 @@ export async function safeExec(tabId, func, args = [], opts = {}) {
     if (err && err.code === 'TAB_WEDGED') throw err;
     const msg = err?.message || String(err);
     if (/cannot access|Cannot access|not allowed|No tab with id/i.test(msg)) {
-      throw new Error(`Cannot execute on tab ${tabId}: ${msg}`);
+      throw new Error(`Cannot execute on tab ${tabId}: ${msg}`, { cause: err });
     }
     throw err;
   }
