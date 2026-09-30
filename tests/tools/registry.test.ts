@@ -13,7 +13,7 @@ describe('Tool Registry', () => {
     'browser_click_text', 'browser_handle_dialog',
     'browser_upload_file', 'browser_run_action',
     'browser_drag', 'browser_fill_form',
-    'browser_observe', 'browser_act', 'browser_batch', 'browser_resize_window',
+    'browser_observe', 'browser_act', 'browser_batch', 'browser_resize_window', 'browser_gif',
   ];
   // Tools that run entirely in the MCP process (they call other tools' handlers)
   // and therefore never send a wire name of their own.

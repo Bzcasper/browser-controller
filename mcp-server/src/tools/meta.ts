@@ -90,6 +90,8 @@ const TOOL_GUIDANCE: Record<string, string> = {
     'Use to scroll the page or a specific element (pixel offset, to-element, or top/bottom). Works with virtualized feeds.',
   browser_hover:
     'Use to trigger tooltips / dropdown menus / hover-only UI states (ref, selector or x/y).',
+  browser_gif:
+    'Use to show the user what you did: start before a flow, export after — writes an animated .gif (clicks marked) and returns its path.',
   browser_resize_window:
     'Use to test responsive layouts or maximize/restore the window holding a tab. Resizes the user\'s window — prefer a separate window for experiments.',
   browser_select:

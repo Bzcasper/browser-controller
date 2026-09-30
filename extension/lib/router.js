@@ -14,6 +14,7 @@ import { handleWait, handleScroll, handleSnapshot, handleFind, handleGetPageText
 import { handleTabs, handleConsole, handleNetwork, handleScreenshot, handleResizeWindow } from '../handlers/tabs.js';
 import { handleRunAction, handleUploadFile } from '../handlers/cdp.js';
 import { handleObserve, handleAct } from '../handlers/agent-api.js';
+import { handleGif, isRecording, recordFrame, GIF_FRAME_TOOLS } from '../handlers/gif.js';
 
 // sessionId arrives as a first-class top-level field on the WS message (audit
 // M1) — the daemon no longer injects it into params. We read it here so the
@@ -62,6 +63,7 @@ const HANDLERS = {
   browser_observe: handleObserve,
   browser_act: handleAct,
   browser_resize_window: handleResizeWindow,
+  browser_gif: handleGif,
 };
 
 /** All tool names the router can dispatch (exported for the drift-guard test). */
@@ -222,6 +224,11 @@ export async function handleMessage(msg) {
       try {
         const result = await dispatch(tool, p, sessionId, agentName, controller.signal);
         sendToolResponse(id, result);
+        // GIF recording: capture the page after the action (the reply is already
+        // sent; the tab mutex keeps the next call from racing the capture).
+        if (GIF_FRAME_TOOLS.has(tool) && isRecording(tabId) && !(result && result.success === false)) {
+          await recordFrame(tabId, tool, result);
+        }
       } catch (err) {
         sendResponse(id, { success: false, error: err.message || String(err) });
       } finally {

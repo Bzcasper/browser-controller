@@ -26,6 +26,7 @@ import { observeTool } from './observe.js';
 import { actTool } from './act.js';
 import { batchTool } from './batch.js';
 import { resizeWindowTool } from './resize-window.js';
+import { gifTool } from './gif.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -54,6 +55,7 @@ export const allTools: ToolDefinition[] = [
   actTool,
   batchTool,
   resizeWindowTool,
+  gifTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(
