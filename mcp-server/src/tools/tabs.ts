@@ -18,6 +18,6 @@ export const tabsTool: ToolDefinition = {
       ctx.addIssue({ code: 'custom', path: ['tabId'], message: `tabId is required for ${params.action}` });
     }
   }),
-  timeoutMs: 5_000,
+  timeoutMs: 20_000,
   handler: forwardHandler('browser_tabs'),
 };

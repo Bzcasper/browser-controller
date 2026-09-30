@@ -4,15 +4,44 @@
  * controllers. The handler registry is a module-level constant — the old
  * dispatch() rebuilt a 22-entry object on every call.
  */
-import { runOnTab as runOnTabLib } from './tab-concurrency.js';
-import { tabLocks, tabMutex, persistSessionState } from './state.js';
-import { sendJson, updateBadge, broadcastStatus, isWsConnected, setCurrentActivity } from './connection.js';
-import { showLockShield, hideLockShield } from './overlay.js';
-import { getActiveTab, handleNavigate } from '../handlers/navigation.js';
-import { handleClick, handleType, handlePressKey, handleHover, handleSelect, handleClickByText, handleDialog, handleDrag, handleFillForm } from '../handlers/interaction.js';
-import { handleWait, handleScroll, handleSnapshot, handleFind, handleGetPageText, handleEvaluate } from '../handlers/inspection.js';
-import { handleTabs, handleConsole, handleNetwork, handleScreenshot } from '../handlers/tabs.js';
-import { handleRunAction, handleUploadFile } from '../handlers/cdp.js';
+import { runOnTab as runOnTabLib } from "./tab-concurrency.js";
+import { tabLocks, tabMutex, persistSessionState } from "./state.js";
+import {
+  sendJson,
+  updateBadge,
+  broadcastStatus,
+  isWsConnected,
+  setCurrentActivity,
+} from "./connection.js";
+import { showLockShield, hideLockShield } from "./overlay.js";
+import { getActiveTab, handleNavigate } from "../handlers/navigation.js";
+import {
+  handleClick,
+  handleType,
+  handlePressKey,
+  handleHover,
+  handleSelect,
+  handleClickByText,
+  handleDialog,
+  handleDrag,
+  handleFillForm,
+} from "../handlers/interaction.js";
+import {
+  handleWait,
+  handleScroll,
+  handleSnapshot,
+  handleFind,
+  handleGetPageText,
+  handleEvaluate,
+} from "../handlers/inspection.js";
+import {
+  handleTabs,
+  handleConsole,
+  handleNetwork,
+  handleScreenshot,
+} from "../handlers/tabs.js";
+import { handleRunAction, handleUploadFile } from "../handlers/cdp.js";
+import { handleIntercept } from "../handlers/intercept.js";
 
 // sessionId arrives as a first-class top-level field on the WS message (audit
 // M1) — the daemon no longer injects it into params. We read it here so the
@@ -58,6 +87,7 @@ const HANDLERS = {
   browser_fill_form: handleFillForm,
   browser_find: handleFind,
   browser_text: handleGetPageText,
+  browser_intercept: handleIntercept,
 };
 
 /** All tool names the router can dispatch (exported for the drift-guard test). */
@@ -81,10 +111,10 @@ function sendResponse(id, response) {
  * can surface it verbatim instead of a bare message.
  */
 function sendToolResponse(id, result) {
-  if (result && typeof result === 'object' && result.success === false) {
+  if (result && typeof result === "object" && result.success === false) {
     sendResponse(id, {
       success: false,
-      error: String(result.error || 'Tool failed'),
+      error: String(result.error || "Tool failed"),
       result,
     });
   } else {
@@ -94,13 +124,13 @@ function sendToolResponse(id, result) {
 
 /** Which tabId does this call target? null = tab-agnostic (tabs list/create). */
 function extractTabId(_tool, params) {
-  return typeof params.tabId === 'number' ? params.tabId : null;
+  return typeof params.tabId === "number" ? params.tabId : null;
 }
 
 export async function handleMessage(msg) {
   // Control messages (non-tool) from the daemon. These carry a `type` and no
   // `tool`; handle them here before the tool-dispatch path assumes a tool call.
-  if (msg.type === 'releaseSession') {
+  if (msg.type === "releaseSession") {
     // Session ids are unique even when two live clients share a display name.
     // Releasing one session therefore cannot unlock its sibling's tabs.
     const owner = msg.sessionId;
@@ -114,12 +144,14 @@ export async function handleMessage(msg) {
       persistSessionState();
       for (const tabId of released) hideLockShield(tabId);
       if (released.length) {
-        broadcastStatus(`Released ${released.length} lock(s) from disconnected agent ${owner}`);
+        broadcastStatus(
+          `Released ${released.length} lock(s) from disconnected agent ${owner}`,
+        );
       }
     }
     return; // control message — no response expected
   }
-  if (msg.type === 'cancel') {
+  if (msg.type === "cancel") {
     // The daemon/bridge aborted a call (client gone / timeout). Abort the
     // in-flight handler so it short-circuits and releases the tab mutex NOW —
     // otherwise a slow navigate (55s) blocks every later call on the same tab
@@ -128,11 +160,15 @@ export async function handleMessage(msg) {
     // interrupted via the AbortSignal it was given.
     const cancelledId = msg.id;
     if (cancelledId && activeControllers.has(cancelledId)) {
-      try { activeControllers.get(cancelledId).abort(); } catch { /* already settled */ }
+      try {
+        activeControllers.get(cancelledId).abort();
+      } catch {
+        /* already settled */
+      }
     }
     return; // control message — no response expected
   }
-  if (msg.type === 'ping') {
+  if (msg.type === "ping") {
     // already handled in onmessage, but be defensive
     return;
   }
@@ -144,7 +180,7 @@ export async function handleMessage(msg) {
 
   // Resolve navigate's documented active-tab fallback before lock/mutex routing.
   // This freezes the target even if the user changes focus while the call waits.
-  if (tool === 'browser_navigate' && typeof p.tabId !== 'number') {
+  if (tool === "browser_navigate" && typeof p.tabId !== "number") {
     p.tabId = (await getActiveTab()).id;
   }
   const tabId = extractTabId(tool, p);
@@ -157,14 +193,21 @@ export async function handleMessage(msg) {
   // and even handle_dialog. Closing the tab is the operator's guaranteed way
   // out, so these two actions take the direct path (their ownership checks
   // live inside handleTabs and still apply).
-  const bypassesMutex = tool === 'browser_tabs' && (p.action === 'close' || p.action === 'focus');
+  const bypassesMutex =
+    tool === "browser_tabs" && (p.action === "close" || p.action === "focus");
 
   // Tools without a tabId (tabs list/create, console-less) run directly.
   if (tabId == null || bypassesMutex) {
     const controller = new AbortController();
     activeControllers.set(id, controller);
     try {
-      const result = await dispatch(tool, p, sessionId, agentName, controller.signal);
+      const result = await dispatch(
+        tool,
+        p,
+        sessionId,
+        agentName,
+        controller.signal,
+      );
       sendToolResponse(id, result);
     } catch (err) {
       sendResponse(id, { success: false, error: err.message || String(err) });
@@ -177,34 +220,39 @@ export async function handleMessage(msg) {
   // Acquire this tab's mutex and honor the unique session's lock ownership.
   const controller = new AbortController();
   activeControllers.set(id, controller);
-  runOnTabLib(
-    tabLocks,
-    tabMutex,
-    tabId,
-    sessionId,
-    async () => {
-      setCurrentActivity(tool);
-      updateBadge('active');
-      // Agent control shows the blue input-blocking spectrum; the label names
-      // the AGENT (user request: "agent {name} controlling the tab"), not the
-      // running tool. agentName is a top-level WS field (audit M1); fall back
-      // to a generic label for anonymous direct-WS callers.
-      await showLockShield(tabId, agentName ? `agent ${agentName} controlling the tab` : 'agent controlling the tab');
-      try {
-        const result = await dispatch(tool, p, sessionId, agentName, controller.signal);
-        sendToolResponse(id, result);
-      } catch (err) {
-        sendResponse(id, { success: false, error: err.message || String(err) });
-      } finally {
-        setCurrentActivity(null);
-        updateBadge(isWsConnected() ? 'connected' : 'disconnected');
-        // A locked tab keeps a plain frame (no label) for the lock's lifetime;
-        // an unlocked tab loses the frame once this action completes.
-        if (tabLocks.owner(tabId)) await showLockShield(tabId);
-        else await hideLockShield(tabId);
-      }
-    },
-  )
+  runOnTabLib(tabLocks, tabMutex, tabId, sessionId, async () => {
+    setCurrentActivity(tool);
+    updateBadge("active");
+    // Agent control shows the blue input-blocking spectrum; the label names
+    // the AGENT (user request: "agent {name} controlling the tab"), not the
+    // running tool. agentName is a top-level WS field (audit M1); fall back
+    // to a generic label for anonymous direct-WS callers.
+    await showLockShield(
+      tabId,
+      agentName
+        ? `agent ${agentName} controlling the tab`
+        : "agent controlling the tab",
+    );
+    try {
+      const result = await dispatch(
+        tool,
+        p,
+        sessionId,
+        agentName,
+        controller.signal,
+      );
+      sendToolResponse(id, result);
+    } catch (err) {
+      sendResponse(id, { success: false, error: err.message || String(err) });
+    } finally {
+      setCurrentActivity(null);
+      updateBadge(isWsConnected() ? "connected" : "disconnected");
+      // A locked tab keeps a plain frame (no label) for the lock's lifetime;
+      // an unlocked tab loses the frame once this action completes.
+      if (tabLocks.owner(tabId)) await showLockShield(tabId);
+      else await hideLockShield(tabId);
+    }
+  })
     .catch((err) => {
       sendResponse(id, { success: false, error: err.message || String(err) });
     })

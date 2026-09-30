@@ -34,7 +34,7 @@ It already has your browser open right there. It just can't see it.
 - **Multiple agents at once.** Cursor can drive tab 10 while Claude drives tab 11 — both through one shared daemon, neither blocking the other.
 - **Tab targeting, not "the active tab."** Every action names a `tabId`. Move your mouse, switch tabs, watch YouTube — the agent keeps working on the tab you told it to. It never hijacks the page you're reading.
 - **Per-tab isolation.** Element refs, console logs, and network buffers are scoped per tab. A ref from tab 10 can never click something in tab 20.
-- **Per-tab concurrency.** Two actions on the *same* tab serialize (no races); actions on *different* tabs run in parallel.
+- **Per-tab concurrency.** Two actions on the _same_ tab serialize (no races); actions on _different_ tabs run in parallel.
 - **Tab locking.** An agent can claim a tab so others queue behind it instead of racing (`browser_tabs { action: "lock" }`). Locks survive Chrome's service-worker recycling (`chrome.storage.session`).
 - **Agent-control shield.** While an agent works on a tab you see a translucent blue inner frame and your input on that tab is blocked (mouse, keyboard, wheel) — the badge shows `agent <name> controlling the tab` and disappears when the action finishes. Locking a tab keeps a plain frame for the lock's lifetime.
 - **Same-origin iframe piercing.** Legacy/enterprise UIs that live inside iframes (e.g. an ONT console in `iframe#mainFrame`) are reachable: all locator tools search iframe documents, and `find`/`click_text` walk every frame.
@@ -132,7 +132,11 @@ By default the daemon names each connection after its parent IDE ("Cursor", "Cla
   "mcpServers": {
     "browser-controller": {
       "command": "node",
-      "args": ["/path/to/browser-controller/mcp-server/dist/index.js", "--agent", "My Project Agent"]
+      "args": [
+        "/path/to/browser-controller/mcp-server/dist/index.js",
+        "--agent",
+        "My Project Agent"
+      ]
     }
   }
 }
@@ -201,7 +205,7 @@ the browser being controlled.
 
 ## Using it
 
-The model is **tab-first**: the agent always says *which* tab to act on. It never assumes "the active tab."
+The model is **tab-first**: the agent always says _which_ tab to act on. It never assumes "the active tab."
 
 ### Basic workflow
 
@@ -262,6 +266,7 @@ npm run setup:cursor   # or: node mcp-server/dist/index.js --setup cursor
 ```
 
 This installs:
+
 - `~/.cursor/rules/browser-controller.mdc` — the tab-targeting workflow, dropdown handling, when to lock tabs
 - `~/.cursor/commands/check-browser.md` — adds `/check-browser` to your Cursor chat
 
@@ -288,27 +293,27 @@ See [`agent-config/`](agent-config/) for manual installation or to customize the
 
 **See**
 
-| Tool | What it does |
-|------|-------------|
-| `browser_snapshot` | Accessibility tree with element refs. Compact mode (default) returns only interactive elements. Traverses shadow DOM + iframes. |
-| `browser_screenshot` | Capture a tab as an image (activates the tab first to capture) |
-| `browser_text` | Extract raw text from page or element |
-| `browser_find` | Query elements by natural language — walks same-origin iframes too |
+| Tool                 | What it does                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `browser_snapshot`   | Accessibility tree with element refs. Compact mode (default) returns only interactive elements. Traverses shadow DOM + iframes. |
+| `browser_screenshot` | Capture a tab as an image (activates the tab first to capture)                                                                  |
+| `browser_text`       | Extract raw text from page or element                                                                                           |
+| `browser_find`       | Query elements by natural language — walks same-origin iframes too                                                              |
 
 **Interact**
 
-| Tool | What it does |
-|------|-------------|
-| `browser_click` | Click by ref or CSS selector — pierces same-origin iframes |
-| `browser_click_text` | Click by visible text. Works through React portals and overlays |
-| `browser_type` | Type into inputs and contenteditable fields |
-| `browser_press_key` | Key combos (Enter, Escape, Ctrl+A) |
-| `browser_scroll` | Scroll pages and virtual containers |
-| `browser_hover` | Trigger tooltips and dropdowns |
-| `browser_select` | Pick from native `<select>` dropdowns |
-| `browser_wait` | Wait for elements to appear or disappear |
-| `browser_fill_form` | Fill multiple form fields in one call (React/Vue-safe setters) |
-| `browser_drag` | Drag element-to-element (uses CDP for reliability) |
+| Tool                  | What it does                                                           |
+| --------------------- | ---------------------------------------------------------------------- |
+| `browser_click`       | Click by ref or CSS selector — pierces same-origin iframes             |
+| `browser_click_text`  | Click by visible text. Works through React portals and overlays        |
+| `browser_type`        | Type into inputs and contenteditable fields                            |
+| `browser_press_key`   | Key combos (Enter, Escape, Ctrl+A)                                     |
+| `browser_scroll`      | Scroll pages and virtual containers                                    |
+| `browser_hover`       | Trigger tooltips and dropdowns                                         |
+| `browser_select`      | Pick from native `<select>` dropdowns                                  |
+| `browser_wait`        | Wait for elements to appear or disappear                               |
+| `browser_fill_form`   | Fill multiple form fields in one call (React/Vue-safe setters)         |
+| `browser_drag`        | Drag element-to-element (uses CDP for reliability)                     |
 | `browser_upload_file` | Upload files through `<input type="file">` (uses CDP, strict-CSP safe) |
 
 <details>
@@ -327,56 +332,56 @@ Paths are absolute and local to the machine running the browser. Omit `ref`/`sel
 
 **Navigate**
 
-| Tool | What it does |
-|------|-------------|
+| Tool               | What it does                                                |
+| ------------------ | ----------------------------------------------------------- |
 | `browser_navigate` | Go to a URL in a tab (`tabId` optional, defaults to active) |
-| `browser_tabs` | List / create / close / focus / **lock** / **unlock** tabs |
+| `browser_tabs`     | List / create / close / focus / **lock** / **unlock** tabs  |
 
 **Debug & Advanced**
 
-| Tool | What it does |
-|------|-------------|
-| `browser_console` | Console output (log, warn, error) — per-tab, capped at 200 entries |
-| `browser_network` | XHR/fetch requests with status codes — per-tab, optional `limit` |
-| `browser_evaluate` | Run JavaScript in the page's MAIN world (no banner, CSP-safe) |
+| Tool                    | What it does                                                                |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `browser_console`       | Console output (log, warn, error) — per-tab, capped at 200 entries          |
+| `browser_network`       | XHR/fetch requests with status codes — per-tab, optional `limit`            |
+| `browser_evaluate`      | Run JavaScript in the page's MAIN world (no banner, CSP-safe)               |
 | `browser_handle_dialog` | Dismiss/accept an open alert/confirm/prompt via CDP (works on frozen pages) |
-| `browser_run_action` | Run a self-contained JS action object via CDP |
+| `browser_run_action`    | Run a self-contained JS action object via CDP                               |
 
 ---
 
 ## How Others Compare
 
-| | Browser Controller | Playwright MCP | Chrome DevTools MCP |
-|---|---|---|---|
-| Uses your existing browser | Yes | No, launches new | Partial, needs debug port |
-| Sessions and cookies | Already there | Fresh profile | Manual setup |
-| Works behind corporate SSO | Yes | No | Depends |
-| Multiple agents, multiple tabs | Yes | No | No |
-| Tab-targeting (won't hijack active tab) | Yes | N/A | No |
-| Authenticated local connection | Yes | N/A | No |
-| Setup | Build from source + extension | Headless browser | Chrome with `--remote-debugging-port` |
+|                                         | Browser Controller            | Playwright MCP   | Chrome DevTools MCP                   |
+| --------------------------------------- | ----------------------------- | ---------------- | ------------------------------------- |
+| Uses your existing browser              | Yes                           | No, launches new | Partial, needs debug port             |
+| Sessions and cookies                    | Already there                 | Fresh profile    | Manual setup                          |
+| Works behind corporate SSO              | Yes                           | No               | Depends                               |
+| Multiple agents, multiple tabs          | Yes                           | No               | No                                    |
+| Tab-targeting (won't hijack active tab) | Yes                           | N/A              | No                                    |
+| Authenticated local connection          | Yes                           | N/A              | No                                    |
+| Setup                                   | Build from source + extension | Headless browser | Chrome with `--remote-debugging-port` |
 
 ---
 
 ## Configuration
 
-| Env var | Default | What it does |
-|---------|---------|-------------|
-| `WS_PORT` | `7225` | WebSocket port the daemon uses for the extension connection |
-| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset) | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of ~4200 for all 22 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
-| `MCP_AGENT_NAME` | (auto: IDE name) | Override the agent name shown in the popup (same as `--agent`) |
+| Env var                          | Default          | What it does                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WS_PORT`                        | `7225`           | WebSocket port the daemon uses for the extension connection                                                                                                                                                                                                                                                                                                                                        |
+| `BROWSER_CONTROLLER_PROGRESSIVE` | (unset)          | Set to `1` to enable progressive tool disclosure: only the `browser_tools` meta tool is visible at startup (~150 tokens instead of ~4200 for all 22 definitions). The agent discovers tools via `browser_tools {action:"list"/"search"}` and activates them with `{action:"details", tool:"…"}`. Default (unset) shows all tools upfront — safe for agents whose instructions call tools directly. |
+| `MCP_AGENT_NAME`                 | (auto: IDE name) | Override the agent name shown in the popup (same as `--agent`)                                                                                                                                                                                                                                                                                                                                     |
 
 ### Daemon state files
 
 The daemon keeps everything in `~/.browser-controller/` (Windows: `%USERPROFILE%\.browser-controller\`):
 
-| File | Purpose |
-|------|---------|
-| `enrollment.json` | One-time pairing secret for the extension (mode `0600`) |
-| `token.json` | Auth token the extension must present on every WebSocket connection (mode `0600`) |
-| `daemon.sock` | The IPC socket thin clients connect to (AF_UNIX on mac/linux; named pipe on Windows) |
-| `daemon.json` | Daemon metadata (pid, port, start time) — used to detect a running daemon |
-| `daemon.log` | Daemon stdout/stderr when spawned by a client |
+| File              | Purpose                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `enrollment.json` | One-time pairing secret for the extension (mode `0600`)                              |
+| `token.json`      | Auth token the extension must present on every WebSocket connection (mode `0600`)    |
+| `daemon.sock`     | The IPC socket thin clients connect to (AF_UNIX on mac/linux; named pipe on Windows) |
+| `daemon.json`     | Daemon metadata (pid, port, start time) — used to detect a running daemon            |
+| `daemon.log`      | Daemon stdout/stderr when spawned by a client                                        |
 
 To fully reset: stop your MCP clients, delete the folder, and the next run recreates it with fresh secrets.
 
@@ -459,14 +464,14 @@ npm run build
 npm test
 ```
 
-| Command | What it does |
-|---------|---------|
-| `npm run build` | Compile TypeScript → `mcp-server/dist/` |
-| `npm run dev` | Watch mode |
-| `npm test` | Run the full test suite (215 tests) |
-| `npm run typecheck` | Type check without emitting |
-| `npm run setup:cursor` | Install Cursor rule + command |
-| `npm run setup:claude` | Install Claude Code `AGENTS.md` |
+| Command                | What it does                            |
+| ---------------------- | --------------------------------------- |
+| `npm run build`        | Compile TypeScript → `mcp-server/dist/` |
+| `npm run dev`          | Watch mode                              |
+| `npm test`             | Run the full test suite (215 tests)     |
+| `npm run typecheck`    | Type check without emitting             |
+| `npm run setup:cursor` | Install Cursor rule + command           |
+| `npm run setup:claude` | Install Claude Code `AGENTS.md`         |
 
 The suite covers the WebSocket bridge (including token-auth rejection and the unified error channel), the tool registry, daemon lifecycle (heartbeat eviction, rate limiting, IPC auth), per-tab concurrency (same-tab serialization + cross-tab parallelism), and extension behavior via a mocked `chrome` API (router dispatch, shield semantics, evaluate round-trip, iframe piercing, dialog rescue). CI runs the suite on Node 20 and 22, plus CodeQL and Scorecard scans.
 

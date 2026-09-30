@@ -1,7 +1,7 @@
-import { z } from 'zod';
-import type { ToolDefinition } from './types.js';
-import { textResult, jsonError } from './types.js';
-import { allTools, toolMap } from './index.js';
+import { z } from "zod";
+import type { ToolDefinition } from "./types.js";
+import { textResult, jsonError } from "./types.js";
+import { allTools, toolMap } from "./index.js";
 
 /**
  * Progressive disclosure meta tool (Anthropic "Code Execution with MCP" pattern).
@@ -43,12 +43,12 @@ export interface MetaToolDeps {
  * summary already does that).
  */
 const TASK_PREAMBLE =
-  'Task → tool:\n' +
-  '• Click / type / fill a form → browser_click / browser_type / browser_fill_form (SPA-aware full events, no debugger banner). Prefer these over raw JS — they handle React/Vue controlled inputs and smart-selector fallback.\n' +
-  '• Read visible text → browser_text (cheapest). Page structure / element refs → browser_snapshot. Screenshot → browser_screenshot (cannot be done via JS).\n' +
-  '• Read/write DOM OR call an internal API (fetch) OR read cookies on a strict-CSP SPA → browser_run_action (runs via CDP, bypasses CSP, returns real values; shows a yellow debugger banner).\n' +
-  '• browser_evaluate is the CSP-bound, banner-free lighter sibling of run_action. Use it only when you must avoid the debugger banner AND the page allows the script. If browser_evaluate returns null, fall back to browser_run_action.\n' +
-  '• Navigate (incl. hash routes) → browser_navigate. Manage tabs → browser_tabs. Wait for something → browser_wait.';
+  "Task → tool:\n" +
+  "• Click / type / fill a form → browser_click / browser_type / browser_fill_form (SPA-aware full events, no debugger banner). Prefer these over raw JS — they handle React/Vue controlled inputs and smart-selector fallback.\n" +
+  "• Read visible text → browser_text (cheapest). Page structure / element refs → browser_snapshot. Screenshot → browser_screenshot (cannot be done via JS).\n" +
+  "• Read/write DOM OR call an internal API (fetch) OR read cookies on a strict-CSP SPA → browser_run_action (runs via CDP, bypasses CSP, returns real values; shows a yellow debugger banner).\n" +
+  "• browser_evaluate is the CSP-bound, banner-free lighter sibling of run_action. Use it only when you must avoid the debugger banner AND the page allows the script. If browser_evaluate returns null, fall back to browser_run_action.\n" +
+  "• Navigate (incl. hash routes) → browser_navigate. Manage tabs → browser_tabs. Wait for something → browser_wait.";
 
 /**
  * Per-tool "use this when… / not for…" guidance, returned alongside each tool
@@ -59,55 +59,56 @@ const TASK_PREAMBLE =
  */
 const TOOL_GUIDANCE: Record<string, string> = {
   browser_click:
-    'Use for ANY click — it dispatches full mouse events and has a smart-selector fallback. Prefer over JS .click().',
+    "Use for ANY click — it dispatches full mouse events and has a smart-selector fallback. Prefer over JS .click().",
   browser_type:
-    'Use for typing into inputs — sets the value with the native setter + input/change events so React/Vue controlled inputs update. Prefer over JS .value= .',
+    "Use for typing into inputs — sets the value with the native setter + input/change events so React/Vue controlled inputs update. Prefer over JS .value= .",
   browser_fill_form:
-    'Use to fill several fields in one call (and optionally submit). Cheaper than repeated browser_type calls.',
+    "Use to fill several fields in one call (and optionally submit). Cheaper than repeated browser_type calls.",
   browser_click_text:
-    'Use to click by visible text (works on React dropdowns/portals that may not appear in a snapshot).',
+    "Use to click by visible text (works on React dropdowns/portals that may not appear in a snapshot).",
   browser_navigate:
-    'Use to go to a URL. Handles hash-only routes correctly (resolves without waiting for a complete event). Returns an optional inline snapshot so you can act immediately.',
+    "Use to go to a URL. Handles hash-only routes correctly (resolves without waiting for a complete event). Returns an optional inline snapshot so you can act immediately.",
   browser_snapshot:
-    'Use to understand page structure and get element refs (e1, e2…) for subsequent click/type calls. Returns the accessibility tree (semantic), not raw DOM.',
+    "Use to understand page structure and get element refs (e1, e2…) for subsequent click/type calls. Returns the accessibility tree (semantic), not raw DOM.",
   browser_text:
-    'Use to read visible text on the page. Cheapest read tool. Returns {text, title, url}.',
+    "Use to read visible text on the page. Cheapest read tool. Returns {text, title, url}.",
   browser_find:
-    'Use to locate elements by natural-language description when you don\'t have a snapshot yet. Returns refs for click/type.',
+    "Use to locate elements by natural-language description when you don't have a snapshot yet. Returns refs for click/type.",
   browser_screenshot:
-    'Use to capture a visual image (PNG/JPEG). Cannot be done via JS — this is the only way to see the page.',
+    "Use to capture a visual image (PNG/JPEG). Cannot be done via JS — this is the only way to see the page.",
   browser_evaluate:
-    'Use for one-off JS in the page MAIN world (no debugger banner). CSP-RESTRICTED: on strict-CSP SPAs it may return null — fall back to browser_run_action (CDP, bypasses CSP).',
+    "Use for one-off JS in the page MAIN world (no debugger banner). CSP-RESTRICTED: on strict-CSP SPAs it may return null — fall back to browser_run_action (CDP, bypasses CSP).",
   browser_run_action:
     'Escape hatch: read/write DOM, fetch an internal API, or read cookies on a strict-CSP site. Runs via CDP so it bypasses CSP and returns real values. Shows a yellow "is being debugged" banner.',
   browser_tabs:
-    'Use to list/create/close/focus/lock tabs. ALWAYS pass an explicit tabId to other tools so the agent doesn\'t act on the tab the user is looking at.',
+    "Use to list/create/close/focus/lock tabs. ALWAYS pass an explicit tabId to other tools so the agent doesn't act on the tab the user is looking at.",
   browser_scroll:
-    'Use to scroll the page or a specific element (pixel offset, to-element, or top/bottom). Works with virtualized feeds.',
+    "Use to scroll the page or a specific element (pixel offset, to-element, or top/bottom). Works with virtualized feeds.",
   browser_hover:
-    'Use to trigger tooltips / dropdown menus / hover-only UI states.',
-  browser_select:
-    'Use to pick an option in a native <select> dropdown.',
+    "Use to trigger tooltips / dropdown menus / hover-only UI states.",
+  browser_select: "Use to pick an option in a native <select> dropdown.",
   browser_press_key:
-    'Use for keyboard input (Enter, Tab, Escape, ArrowDown, Ctrl+A, …).',
+    "Use for keyboard input (Enter, Tab, Escape, ArrowDown, Ctrl+A, …).",
   browser_wait:
-    'Use to wait for an element to appear/disappear, or a fixed delay. Avoids fragile sleep loops.',
+    "Use to wait for an element to appear/disappear, or a fixed delay. Avoids fragile sleep loops.",
   browser_console:
-    'Use to read console messages (log/warn/error) from a tab. Useful for debugging.',
+    "Use to read console messages (log/warn/error) from a tab. Useful for debugging.",
   browser_network:
-    'Use to read network requests the page made (filter by URL). Useful for seeing API calls.',
+    "Use to read network requests the page made (filter by URL). Useful for seeing API calls.",
   browser_upload_file:
     'Use to upload a file through an <input type="file">. Works even on strict-CSP pages (uses CDP).',
   browser_drag:
-    'Use for drag-and-drop (ref/selector or x/y coords). Uses CDP mouse events for reliability.',
+    "Use for drag-and-drop (ref/selector or x/y coords). Uses CDP mouse events for reliability.",
   browser_handle_dialog:
-    'Use to handle or dismiss a JS dialog (alert/confirm/prompt) that blocks the page.',
+    "Use to handle or dismiss a JS dialog (alert/confirm/prompt) that blocks the page.",
+  browser_intercept:
+    "Use to block/redirect/mock network traffic per tab (rules by URL regex) or export a redacted HAR. Check the enforcement flag — capture-only means rules are ledger-marked, not applied.",
 };
 
 export function createMetaTool(deps: MetaToolDeps): ToolDefinition {
   return {
-    name: 'browser_tools',
-    summary: 'Discover and activate browser tools (progressive disclosure)',
+    name: "browser_tools",
+    summary: "Discover and activate browser tools (progressive disclosure)",
     description: `Discover, search, and activate browser control tools. Instead of loading all tool definitions upfront, use this to find the right tool for your task.
 
 Actions:
@@ -118,49 +119,72 @@ Actions:
 Workflow: call "list" or "search" first, then "details" on the tool you need, then call that tool directly.`,
     inputSchema: z.object({
       action: z
-        .enum(['list', 'search', 'details'])
-        .describe('list = all summaries; search = find by keyword; details = full schema + activate'),
+        .enum(["list", "search", "details"])
+        .describe(
+          "list = all summaries; search = find by keyword; details = full schema + activate",
+        ),
       query: z
         .string()
         .optional()
-        .describe('Search query (for action:"search"). Matches tool name + summary.'),
+        .describe(
+          'Search query (for action:"search"). Matches tool name + summary.',
+        ),
       tool: z
         .string()
         .optional()
         .describe('Tool name (for action:"details"). e.g. "browser_click"'),
     }),
     async handler(_host, params) {
-      const { action, query, tool } = params as { action: string; query?: string; tool?: string };
+      const { action, query, tool } = params as {
+        action: string;
+        query?: string;
+        tool?: string;
+      };
 
-      if (action === 'list') {
+      if (action === "list") {
         const tools = allTools
-          .filter((t) => t.name !== 'browser_tools') // don't list the meta tool itself
+          .filter((t) => t.name !== "browser_tools") // don't list the meta tool itself
           .map((t) => ({
             name: t.name,
             summary: t.summary,
-            guidance: TOOL_GUIDANCE[t.name] ?? '',
+            guidance: TOOL_GUIDANCE[t.name] ?? "",
             active: deps.isActive(t.name),
           }));
         return textResult(JSON.stringify({ preamble: TASK_PREAMBLE, tools }));
       }
 
-      if (action === 'search') {
+      if (action === "search") {
         if (!query) {
           return jsonError({ error: 'query is required for action:"search"' });
         }
         const q = query.toLowerCase();
         const matches = allTools
-          .filter((t) => t.name !== 'browser_tools')
+          .filter((t) => t.name !== "browser_tools")
           .filter((t) => {
-            const haystack = (t.name + ' ' + t.summary + ' ' + t.description).toLowerCase();
+            const haystack = (
+              t.name +
+              " " +
+              t.summary +
+              " " +
+              t.description
+            ).toLowerCase();
             // match if ANY word in the query appears in the haystack
-            return q.split(/\s+/).some((word) => word.length > 1 && haystack.includes(word));
+            return q
+              .split(/\s+/)
+              .some((word) => word.length > 1 && haystack.includes(word));
           })
-          .map((t) => ({ name: t.name, summary: t.summary, guidance: TOOL_GUIDANCE[t.name] ?? '', active: deps.isActive(t.name) }));
-        return textResult(JSON.stringify({ query, matches, count: matches.length }));
+          .map((t) => ({
+            name: t.name,
+            summary: t.summary,
+            guidance: TOOL_GUIDANCE[t.name] ?? "",
+            active: deps.isActive(t.name),
+          }));
+        return textResult(
+          JSON.stringify({ query, matches, count: matches.length }),
+        );
       }
 
-      if (action === 'details') {
+      if (action === "details") {
         if (!tool) {
           return jsonError({ error: 'tool is required for action:"details"' });
         }
@@ -168,7 +192,9 @@ Workflow: call "list" or "search" first, then "details" on the tool you need, th
         if (!def) {
           return jsonError({
             error: `Unknown tool: ${tool}`,
-            available: allTools.filter((t) => t.name !== 'browser_tools').map((t) => t.name),
+            available: allTools
+              .filter((t) => t.name !== "browser_tools")
+              .map((t) => t.name),
           });
         }
         // Activate the tool so the agent can call it directly after this.
@@ -182,7 +208,7 @@ Workflow: call "list" or "search" first, then "details" on the tool you need, th
           JSON.stringify({
             name: def.name,
             description: def.description,
-            guidance: TOOL_GUIDANCE[def.name] ?? '',
+            guidance: TOOL_GUIDANCE[def.name] ?? "",
             inputSchema: jsonSchema,
             activated: true,
             message: `Tool "${tool}" is now active. You can call it directly.`,
@@ -190,7 +216,9 @@ Workflow: call "list" or "search" first, then "details" on the tool you need, th
         );
       }
 
-      return jsonError({ error: `Unknown action: ${action}. Use "list", "search", or "details".` });
+      return jsonError({
+        error: `Unknown action: ${action}. Use "list", "search", or "details".`,
+      });
     },
   };
 }

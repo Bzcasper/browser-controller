@@ -13,7 +13,7 @@
  *     storage is wiped when the browser closes, which is exactly the right
  *     lifetime for both. See loadSessionState/persistSessionState.
  */
-import { TabMutexMap, TabLockMap } from './tab-concurrency.js';
+import { TabMutexMap, TabLockMap } from "./tab-concurrency.js";
 
 export const PER_TAB_CAP = 200;
 // Response cap for unbounded result tools (evaluate/run_action). browser_text
@@ -62,7 +62,7 @@ export function pushCapped(arr, item, cap = PER_TAB_CAP) {
 
 // --- MV3 session persistence (architecture item) ---------------------------
 
-const SESSION_STATE_KEY = 'bcSessionState';
+const SESSION_STATE_KEY = "bcSessionState";
 
 /**
  * Persist lock ownership + smart-selector fallbacks to chrome.storage.session.
@@ -76,10 +76,14 @@ export function persistSessionState() {
     for (const [tabId, map] of fallbackByTab) {
       fallbacks[tabId] = Object.fromEntries(map);
     }
-    chrome.storage.session.set({
-      [SESSION_STATE_KEY]: { locks: tabLocks.snapshot(), fallbacks },
-    }).catch(() => {});
-  } catch { /* storage unavailable — in-memory behavior */ }
+    chrome.storage.session
+      .set({
+        [SESSION_STATE_KEY]: { locks: tabLocks.snapshot(), fallbacks },
+      })
+      .catch(() => {});
+  } catch {
+    /* storage unavailable — in-memory behavior */
+  }
 }
 
 /**
@@ -97,17 +101,21 @@ export async function loadSessionState() {
         // lock() refuses to steal: a stale entry for a tab another live session
         // re-locked is impossible here (we're the only instance), but the guard
         // costs nothing.
-        try { tabLocks.lock(tabId, sessionId); } catch {}
+        try {
+          tabLocks.lock(tabId, sessionId);
+        } catch {}
       }
     }
-    if (state.fallbacks && typeof state.fallbacks === 'object') {
+    if (state.fallbacks && typeof state.fallbacks === "object") {
       for (const [tabId, entries] of Object.entries(state.fallbacks)) {
-        if (entries && typeof entries === 'object') {
+        if (entries && typeof entries === "object") {
           fallbackByTab.set(Number(tabId), new Map(Object.entries(entries)));
         }
       }
     }
-  } catch { /* storage unavailable — start empty, as before */ }
+  } catch {
+    /* storage unavailable — start empty, as before */
+  }
 }
 
 /** Drop one tab's durable state (tab closed). */

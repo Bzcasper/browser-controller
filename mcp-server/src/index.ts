@@ -289,8 +289,9 @@ async function daemonLooksAlive(): Promise<boolean> {
     if (!fs.existsSync(DAEMON_INFO_FILE)) return false;
     const info = JSON.parse(fs.readFileSync(DAEMON_INFO_FILE, 'utf8'));
     const ageMs = Date.now() - info.startedAt;
-    if (ageMs > 60 * 60 * 1000) return false;
 
+    // The active socket probe is the source of truth. A long-lived healthy daemon
+    // must not be treated as stale solely because daemon.json is older than 1 hour.
     if (await connectProbe()) return true;
 
     // First probe failed. If the daemon is brand new (< 10s old) it may simply
