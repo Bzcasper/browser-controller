@@ -79,8 +79,8 @@ describe('extension router (handleMessage)', () => {
     const frame = lastFrame();
     expect(frame.id).toBe('w1');
     expect(frame.success).toBe(false);
-    expect(frame.error).toBe('Need selector or delay');
-    expect(frame.result).toEqual({ success: false, error: 'Need selector or delay' });
+    expect(frame.error).toBe('Need selector, text, urlIncludes or delay');
+    expect(frame.result).toEqual({ success: false, error: 'Need selector, text, urlIncludes or delay' });
   });
 
   it('converts a THROWN handler error into a wire-level error', async () => {

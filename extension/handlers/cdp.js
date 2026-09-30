@@ -3,7 +3,7 @@
  * upload_file — the two tools that cannot be implemented with
  * chrome.scripting (CSP bypass / DOM.setFileInputFiles).
  */
-import { resolveTab, safeExec } from '../lib/page-exec.js';
+import { resolveTab, execDom, getFallback } from '../lib/page-exec.js';
 import { MAX_RESULT_CHARS } from '../lib/state.js';
 import { ensureCdp } from '../lib/cdp-session.js';
 
@@ -67,71 +67,76 @@ export async function handleRunAction(params, _sessionId, _agentName, signal) {
   }
 }
 
+/** Main-world expression returning the node marked data-bc-upload=token (pierces open shadow roots / same-origin frames). */
+export function findMarkedExpression(token) {
+  return `(() => { const s = '[data-bc-upload="${token}"]';
+    const q = (root, d) => { const hit = root.querySelector(s); if (hit || d > 6) return hit;
+      for (const el of root.querySelectorAll('*')) {
+        if (el.shadowRoot) { const h = q(el.shadowRoot, d + 1); if (h) return h; }
+        if (el.tagName === 'IFRAME') { try { const h = el.contentDocument && q(el.contentDocument, d + 1); if (h) return h; } catch (e) {} }
+      }
+      return null; };
+    return q(document, 0); })()`;
+}
+
 export async function handleUploadFile(params) {
   const { tabId, ref, selector, filePath, files: fileList } = params;
   const tab = await resolveTab(tabId);
   const filePaths = fileList || (filePath ? [filePath] : []);
   if (filePaths.length === 0) throw new Error('filePath or files required');
 
-  let sel = 'input[type="file"]';
-  if (ref) sel = `[data-mcp-ref="${ref}"]`;
-  else if (selector) sel = selector;
-
-  // Verify the target BEFORE the CDP round-trip: CDP's DOM.querySelector
-  // happily resolves any node, and DOM.setFileInputFiles on a non-file input
-  // fails with an opaque protocol error (or worse, on some Chrome versions,
-  // appears to succeed). React onChange handlers also require a change/input
-  // event after the files are set — CDP doesn't fire one.
-  const check = await safeExec(tab.id, (s) => {
-    const el = document.querySelector(s);
+  // Resolve in the page with the shared resolver (ref registry, visible-first
+  // selector across shadow roots / same-origin frames, verified fallback), then
+  // hand the node to CDP through a one-shot marker attribute.
+  const sel = selector || (ref ? null : 'input[type="file"]');
+  const what = selector || (ref ? `ref ${ref}` : 'input[type="file"]');
+  const token = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const check = await execDom(tab.id, (_ref, _sel, _fb, _token) => {
+    const D = globalThis.__bcDom;
+    if (!D) return { __needDom: true };
+    const el = D.resolve(_ref, _sel, _fb).el;
     if (!el) return { found: false };
+    el.setAttribute('data-bc-upload', _token);
     return {
       found: true,
       isFileInput: el.tagName === 'INPUT' && el.type === 'file',
       multiple: !!el.multiple,
     };
-  }, [sel]).catch(() => null);
-  if (check && check.found) {
-    if (!check.isFileInput) throw new Error(`Element matching ${sel} is not an <input type="file">.`);
-    if (filePaths.length > 1 && !check.multiple) {
-      throw new Error(`File input matching ${sel} does not accept multiple files.`);
-    }
+  }, [ref || null, sel, getFallback(tab.id, ref), token]).catch(() => null);
+  if (!check || !check.found) throw new Error(`File input not found: ${what}`);
+  if (!check.isFileInput) throw new Error(`Element matching ${what} is not an <input type="file">.`);
+  if (filePaths.length > 1 && !check.multiple) {
+    throw new Error(`File input matching ${what} does not accept multiple files.`);
   }
 
   // upload_file stays on CDP (DOM.setFileInputFiles is CDP-only).
   let uploaded = false;
   try {
     const send = await ensureCdp(tab.id);
-    await send('DOM.enable');
-    const { root } = await send('DOM.getDocument');
-
-    const { nodeId } = await send('DOM.querySelector', {
-      nodeId: root.nodeId,
-      selector: sel,
-    });
-
-    if (!nodeId) throw new Error(`File input not found with selector: ${sel}`);
-
-    await send('DOM.setFileInputFiles', {
-      files: filePaths,
-      nodeId,
-    });
+    // Find the marked node wherever it lives (open shadow roots, same-origin frames).
+    const { result } = await send('Runtime.evaluate', { expression: findMarkedExpression(token) });
+    if (!result || !result.objectId) throw new Error(`File input not found: ${what}`);
+    await send('DOM.setFileInputFiles', { files: filePaths, objectId: result.objectId });
     uploaded = true;
   } finally {
     // Fire the events React/Vue file inputs listen for after a successful set,
-    // and always remove the short-lived Observation V2 handoff marker.
+    // and always remove the one-shot marker (and the Observation V2 handoff marker).
     try {
-      await safeExec(tab.id, (s, notify) => {
-        const el = document.querySelector(s);
-        if (!el) return;
+      await execDom(tab.id, (_token, notify) => {
+        const D = globalThis.__bcDom;
+        if (!D) return { __needDom: true };
+        const el = (D.queryAll(`[data-bc-upload="${_token}"]`, true) || [])[0];
+        if (!el) return null;
         if (notify) {
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         }
+        el.removeAttribute('data-bc-upload');
         el.removeAttribute('data-bc-v2-upload');
-      }, [sel, uploaded]);
+        return null;
+      }, [token, uploaded]);
     } catch { /* page changed — CDP outcome still determines the tool result */ }
   }
 
-  return { success: true, files: filePaths, selector: sel };
+  return { success: true, files: filePaths, selector: what };
 }

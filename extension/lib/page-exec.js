@@ -3,6 +3,7 @@
  * the locator guard, and safeExec. Everything a handler needs to touch a page.
  */
 import { fallbackByTab } from './state.js';
+import { PAGE_DOM_INSTALL, PAGE_DOM_VERSION } from './page-dom.js';
 
 /**
  * Resolve a tab by id, throwing a clear, actionable error if it's gone.
@@ -75,4 +76,18 @@ export async function safeExec(tabId, func, args = [], opts = {}) {
     }
     throw err;
   }
+}
+
+/**
+ * Run a page function that uses the shared DOM runtime (globalThis.__bcDom,
+ * lib/page-dom.js). Page functions start with
+ *   `if (!globalThis.__bcDom) return { __needDom: true };`
+ * so the steady state costs one executeScript; the runtime is installed and
+ * the call repeated only when the document doesn't have it yet.
+ */
+export async function execDom(tabId, func, args = [], opts = {}) {
+  const res = await safeExec(tabId, func, args, opts);
+  if (!res || res.__needDom !== true) return res;
+  await safeExec(tabId, PAGE_DOM_INSTALL, [PAGE_DOM_VERSION], opts);
+  return safeExec(tabId, func, args, opts);
 }
