@@ -184,6 +184,7 @@ export class ExtensionBridge {
       throw new Error(
         `Cannot listen on ${this.host}:${this.port}: ${owner} already owns the port. ` +
         'Refusing to terminate another process automatically.',
+        { cause: err },
       );
     }
   }
@@ -473,10 +474,10 @@ export class ExtensionBridge {
       try {
         await this.waitForConnection(5_000);
       } catch (error) {
-        if (this.handshakeError) throw new Error(this.handshakeError);
+        if (this.handshakeError) throw new Error(this.handshakeError, { cause: error });
         throw new Error(error instanceof Error && /protocol|capabilit/i.test(error.message)
           ? error.message
-          : 'Chrome extension not connected. Make sure the Browser Controller extension is installed and enabled.');
+          : 'Chrome extension not connected. Make sure the Browser Controller extension is installed and enabled.', { cause: error });
       }
     }
 

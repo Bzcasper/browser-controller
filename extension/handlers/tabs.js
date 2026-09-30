@@ -223,7 +223,7 @@ export async function handleNetwork(params) {
     try {
       re = new RegExp(filter);
     } catch (err) {
-      throw new Error(`Invalid filter regex: ${err?.message || err}`);
+      throw new Error(`Invalid filter regex: ${err?.message || err}`, { cause: err });
     }
     reqs = reqs.filter((r) => re.test(r.url));
   }
