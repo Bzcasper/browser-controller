@@ -3,9 +3,10 @@
  * lifecycle (list/create/close/focus/lock/unlock), console/network reads,
  * screenshot.
  */
-import { resolveTab } from '../lib/page-exec.js';
+import { resolveTab, replaceFrozenTab } from '../lib/page-exec.js';
 import {
   tabLocks,
+  wedgedTabs,
   windowCaptureMutex,
   consoleByTab,
   networkByTab,
@@ -182,6 +183,38 @@ export async function handleTabs(params, sessionId) {
     case 'create': {
       const t = await chrome.tabs.create({ url: url || 'about:blank' });
       return { success: true, tabId: t.id, url: t.url };
+    }
+    case 'reload': {
+      if (!tabId) throw new Error('tabId required');
+      const reloadOwner = tabLocks.owner(tabId);
+      if (reloadOwner && reloadOwner !== sessionId) {
+        throw new Error(`Tab ${tabId} is locked by ${reloadOwner} — unlock it from that session before reloading.`);
+      }
+      const current = await resolveTab(tabId);
+      // A frozen page would block the reload until it frees up: replace the tab.
+      const fresh = await replaceFrozenTab(current, current.url);
+      if (fresh) {
+        return { success: true, reloaded: fresh.id, replacedTabId: tabId, url: current.url, note: `tab ${tabId} was frozen and has been replaced by tab ${fresh.id}` };
+      }
+      const done = new Promise((resolve) => {
+        const timer = setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(false); }, 30_000);
+        function listener(id, info) {
+          if (id === tabId && info.status === 'complete') {
+            clearTimeout(timer);
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve(true);
+          }
+        }
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+      await chrome.tabs.reload(tabId, { bypassCache: params.bypassCache === true });
+      const loaded = await done;
+      wedgedTabs.delete(tabId);
+      const t = await chrome.tabs.get(tabId);
+      return {
+        success: true, reloaded: tabId, url: t.url,
+        ...(loaded ? {} : { warning: 'load did not complete within 30s' }),
+      };
     }
     case 'close': {
       if (!tabId) throw new Error('tabId required');

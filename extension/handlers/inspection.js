@@ -2,7 +2,7 @@
  * Inspection handlers (extracted from background.js): wait, scroll, snapshot,
  * find, text, evaluate — the read side of the toolset.
  */
-import { safeExec, execDom, resolveTab, getFallback } from '../lib/page-exec.js';
+import { safeExec, execDom, resolveTab, getFallback, assertResponsive } from '../lib/page-exec.js';
 import { fallbackByTab, lastSnapshotFingerprints, MAX_RESULT_CHARS, persistSessionState } from '../lib/state.js';
 import { PAGE_FALLBACK_INSTALL } from '../utils/smart-selector.js';
 import { withCdp } from '../lib/cdp-session.js';
@@ -534,6 +534,7 @@ export async function handleEvaluate(params, _sessionId, _agentName, signal) {
   // Default: REPL semantics over CDP (top-level await, last expression is the
   // result, not blocked by CSP). mode:"scripting" (or no debugger available)
   // keeps the banner-free chrome.scripting path below.
+  await assertResponsive(tabId);
   if (mode !== 'scripting') {
     let attached = false;
     try {

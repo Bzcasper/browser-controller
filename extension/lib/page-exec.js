@@ -2,7 +2,7 @@
  * Page-execution primitives (extracted from background.js): tab resolution,
  * the locator guard, and safeExec. Everything a handler needs to touch a page.
  */
-import { fallbackByTab } from './state.js';
+import { fallbackByTab, wedgedTabs } from './state.js';
 import { PAGE_DOM_INSTALL, PAGE_DOM_VERSION } from './page-dom.js';
 
 /**
@@ -47,6 +47,60 @@ export function getFallback(tabId, ref) {
   return map.get(ref) || null;
 }
 
+/** Default budget for one page function (below every tool's own timeout). */
+export const PAGE_EXEC_TIMEOUT_MS = 8_000;
+/** Probe budget for a tab already known to be unresponsive. */
+export const WEDGE_PROBE_MS = 1_500;
+
+/** Race a promise against a timer; the timer's error comes from makeError(). */
+export function withTimeout(promise, ms, makeError) {
+  let timer;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(makeError()), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+export function wedgedError(tabId, ms) {
+  const err = new Error(`TAB_WEDGED: tab ${tabId} did not respond within ${(ms / 1000).toFixed(1)}s `
+    + '(frozen main thread or a huge document). browser_navigate it elsewhere, reload it '
+    + '(browser_tabs action:"reload") or close it; other tabs are unaffected.');
+  err.code = 'TAB_WEDGED';
+  return err;
+}
+
+/** Is a previously wedged tab answering again? Clears the mark when it is. */
+export async function probeResponsive(tabId, ms = WEDGE_PROBE_MS) {
+  try {
+    await withTimeout(chrome.scripting.executeScript({ target: { tabId }, func: () => 1 }), ms, () => wedgedError(tabId, ms));
+    wedgedTabs.delete(tabId);
+    return true;
+  } catch (err) {
+    if (err && err.code === 'TAB_WEDGED') return false;
+    wedgedTabs.delete(tabId); // a different failure (protected page, gone): not a wedge
+    return true;
+  }
+}
+
+/**
+ * A frozen page holds every navigation/reload of its tab hostage until its
+ * main thread frees up (57 s measured on a busy loop; CDP Page.crash and
+ * tabs.discard don't help — discard even changes the tab id). Closing a tab
+ * never waits for the page, so replace it: a new tab at the same position,
+ * then close the frozen one. Returns the new tab, or null when the tab was
+ * not wedged. Callers report `replacedTabId` so the agent switches ids.
+ */
+export async function replaceFrozenTab(tab, url) {
+  if (!wedgedTabs.has(tab.id)) return null;
+  const fresh = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index, url: url || 'about:blank', active: !!tab.active });
+  wedgedTabs.delete(tab.id);
+  chrome.tabs.remove(tab.id).catch(() => { /* already gone */ });
+  return fresh;
+}
+
+/** Fail fast when the tab is known to be frozen (one short probe, no queueing). */
+export async function assertResponsive(tabId) {
+  if (wedgedTabs.has(tabId) && !(await probeResponsive(tabId))) throw wedgedError(tabId, WEDGE_PROBE_MS);
+}
+
 /**
  * safeExec (task 2.5): run chrome.scripting.executeScript against a tab,
  * turning "can't access chrome:// / webstore / devtools pages" into a clear
@@ -61,15 +115,24 @@ export async function safeExec(tabId, func, args = [], opts = {}) {
     throw new Error(`Cannot access protected page (${tab.url}). Tab ${tabId} is a browser-internal page.`);
   }
   const sanitized = args.map((a) => (a === undefined ? null : a));
+  await assertResponsive(tabId);
+  // An in-flight executeScript can't be aborted: without a timer a frozen page
+  // pinned the tab's mutex until the caller's own timeout, and every queued
+  // call after it waited too (benchmark: 2 × 125 s on one JSON page).
+  const ms = opts.timeoutMs ?? PAGE_EXEC_TIMEOUT_MS;
   try {
-    const results = await chrome.scripting.executeScript({
+    const results = await withTimeout(chrome.scripting.executeScript({
       target: { tabId },
       func,
       args: sanitized,
       ...(opts.world ? { world: opts.world } : {}),
+    }), ms, () => {
+      wedgedTabs.set(tabId, Date.now());
+      return wedgedError(tabId, ms);
     });
     return results[0]?.result;
   } catch (err) {
+    if (err && err.code === 'TAB_WEDGED') throw err;
     const msg = err?.message || String(err);
     if (/cannot access|Cannot access|not allowed|No tab with id/i.test(msg)) {
       throw new Error(`Cannot execute on tab ${tabId}: ${msg}`);

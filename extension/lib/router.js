@@ -5,7 +5,7 @@
  * dispatch() rebuilt the tool map on every call.
  */
 import { runOnTab as runOnTabLib } from './tab-concurrency.js';
-import { tabLocks, tabMutex, observationSnapshots, persistSessionState } from './state.js';
+import { tabLocks, tabMutex, observationSnapshots, persistSessionState, wedgedTabs } from './state.js';
 import { sendJson, updateBadge, broadcastStatus, isWsConnected, setCurrentActivity } from './connection.js';
 import { showLockShield, hideLockShield } from './overlay.js';
 import { getActiveTab, handleNavigate } from '../handlers/navigation.js';
@@ -70,6 +70,14 @@ export async function dispatch(tool, params, sessionId, agentName, signal) {
   const handler = HANDLERS[tool];
   if (!handler) throw new Error(`Unknown tool: ${tool}`);
   return handler(params, sessionId, agentName, signal);
+}
+
+const OVERLAY_MS = 1_500;
+function overlayStep(promise) {
+  let timer;
+  return Promise.race([promise, new Promise((r) => { timer = setTimeout(r, OVERLAY_MS); })])
+    .catch(() => {})
+    .finally(() => clearTimeout(timer));
 }
 
 function sendResponse(id, response) {
@@ -170,8 +178,11 @@ export async function handleMessage(msg) {
   // and even handle_dialog. Close/focus retain their ownership checks inside
   // handleTabs; dialog handling uses CDP directly and must reach the native
   // prompt without waiting for page execution to settle.
-  const bypassesMutex = (tool === 'browser_tabs' && (p.action === 'close' || p.action === 'focus'))
-    || tool === 'browser_handle_dialog';
+  // A wedged tab's queue may still hold calls waiting on a frozen page:
+  // navigate/reload are the recovery path and need no page cooperation.
+  const bypassesMutex = (tool === 'browser_tabs' && (p.action === 'close' || p.action === 'focus' || p.action === 'reload'))
+    || tool === 'browser_handle_dialog'
+    || (tool === 'browser_navigate' && wedgedTabs.has(tabId));
 
   // Tools without a tabId (tabs list/create, console-less) run directly.
   if (tabId == null || bypassesMutex) {
@@ -203,7 +214,10 @@ export async function handleMessage(msg) {
       // the AGENT (user request: "agent {name} controlling the tab"), not the
       // running tool. agentName is a top-level WS field (audit M1); fall back
       // to a generic label for anonymous direct-WS callers.
-      await showLockShield(tabId, agentName ? `agent ${agentName} controlling the tab` : 'agent controlling the tab');
+      // Best effort and bounded: the shield is cosmetic, a frozen page must not block the tool.
+      if (!wedgedTabs.has(tabId)) {
+        await overlayStep(showLockShield(tabId, agentName ? `agent ${agentName} controlling the tab` : 'agent controlling the tab'));
+      }
       try {
         const result = await dispatch(tool, p, sessionId, agentName, controller.signal);
         sendToolResponse(id, result);
@@ -214,8 +228,10 @@ export async function handleMessage(msg) {
         updateBadge(isWsConnected() ? 'connected' : 'disconnected');
         // A locked tab keeps a plain frame (no label) for the lock's lifetime;
         // an unlocked tab loses the frame once this action completes.
-        if (tabLocks.owner(tabId)) await showLockShield(tabId);
-        else await hideLockShield(tabId);
+        if (!wedgedTabs.has(tabId)) {
+          if (tabLocks.owner(tabId)) await overlayStep(showLockShield(tabId));
+          else await overlayStep(hideLockShield(tabId));
+        }
       }
     },
   )
