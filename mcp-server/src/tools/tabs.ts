@@ -13,6 +13,9 @@ export const tabsTool: ToolDefinition = {
     tabId: z.number().int().optional().describe('Tab ID (required for close/focus/reload/lock/unlock)'),
     bypassCache: z.boolean().optional().describe('reload: skip the HTTP cache'),
     url: z.string().optional().describe('URL for create action'),
+    active: z.boolean().optional().describe('create: false opens the tab in the background (the user keeps their current tab)'),
+    window: z.boolean().optional().describe('focus: also bring the tab\'s window to the front'),
+    fullUrls: z.boolean().optional().describe('list: do not shorten long URLs'),
   }).superRefine((params, ctx) => {
     const targetedActions = ['close', 'focus', 'reload', 'lock', 'unlock'];
     if (targetedActions.includes(params.action) && params.tabId === undefined) {

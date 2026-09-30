@@ -3,7 +3,7 @@
  * lifecycle (list/create/close/focus/lock/unlock), console/network reads,
  * screenshot.
  */
-import { resolveTab, replaceFrozenTab } from '../lib/page-exec.js';
+import { resolveTab, replaceFrozenTab, safeExec } from '../lib/page-exec.js';
 import {
   tabLocks,
   wedgedTabs,
@@ -195,7 +195,7 @@ export async function handleTabs(params, sessionId) {
         tabs: tabs.map((t) => {
           const entry = { id: t.id, windowId: t.windowId, title: t.title, active: t.active };
           const url = String(t.url || '');
-          entry.url = url.length > 80 ? url.slice(0, 77) + '...' : url;
+          entry.url = params.fullUrls || url.length <= 80 ? url : url.slice(0, 77) + '...';
           const owner = tabLocks.owner(t.id);
           if (owner) entry.lockedBy = owner; // omit when null — saves tokens
           return entry;
@@ -203,8 +203,9 @@ export async function handleTabs(params, sessionId) {
       };
     }
     case 'create': {
-      const t = await chrome.tabs.create({ url: url || 'about:blank' });
-      return { success: true, tabId: t.id, url: t.url };
+      // active:false opens it in the background: the user's current tab stays in front.
+      const t = await chrome.tabs.create({ url: url || 'about:blank', ...(params.active === false ? { active: false } : {}) });
+      return { success: true, tabId: t.id, url: t.url || t.pendingUrl || url || 'about:blank', ...(params.active === false ? { active: false } : {}) };
     }
     case 'reload': {
       if (!tabId) throw new Error('tabId required');
@@ -257,8 +258,12 @@ export async function handleTabs(params, sessionId) {
       if (focusOwner && focusOwner !== sessionId) {
         throw new Error(`Tab ${tabId} is locked by ${focusOwner} — unlock it from that session before focusing.`);
       }
-      await chrome.tabs.update(tabId, { active: true });
-      return { success: true, focused: tabId };
+      const focusedTab = await chrome.tabs.update(tabId, { active: true });
+      // window:true also brings its window to the front (OS focus).
+      if (params.window === true && focusedTab?.windowId != null) {
+        await chrome.windows.update(focusedTab.windowId, { focused: true }).catch(() => {});
+      }
+      return { success: true, focused: tabId, ...(params.window === true ? { windowFocused: true } : {}) };
     }
     case 'lock': {
       if (!tabId) throw new Error('tabId required');
@@ -286,4 +291,30 @@ export async function handleTabs(params, sessionId) {
     default:
       throw new Error(`Unknown action: ${action}`);
   }
+}
+
+/** Resize / change the state of the window that holds a tab. */
+export async function handleResizeWindow(params, sessionId) {
+  const { tabId, width, height, state } = params;
+  const tab = await resolveTab(tabId);
+  const owner = tabLocks.owner(tabId);
+  if (owner && owner !== sessionId) throw new Error(`Tab ${tabId} is locked by ${owner} — unlock it from that session first.`);
+  const update = {};
+  if (width != null) update.width = Math.round(width);
+  if (height != null) update.height = Math.round(height);
+  if (state) update.state = state;
+  // Sizes only apply to a normal window; a maximized one must be restored first.
+  if (update.width != null || update.height != null) {
+    if (update.state && update.state !== 'normal') { delete update.width; delete update.height; }
+    else update.state = 'normal';
+  }
+  if (Object.keys(update).length === 0) throw new Error('width, height or state is required');
+  const win = await chrome.windows.update(tab.windowId, update);
+  await new Promise((r) => setTimeout(r, 200)); // let the page re-layout
+  let viewport = null;
+  try { viewport = await safeExec(tabId, () => [window.innerWidth, window.innerHeight], [], { timeoutMs: 2000 }); } catch { /* protected page */ }
+  return {
+    success: true, windowId: win.id, state: win.state, width: win.width, height: win.height,
+    ...(Array.isArray(viewport) ? { viewport: { width: viewport[0], height: viewport[1] } } : {}),
+  };
 }

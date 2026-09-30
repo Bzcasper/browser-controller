@@ -25,6 +25,7 @@ import { fillFormTool } from './fill-form.js';
 import { observeTool } from './observe.js';
 import { actTool } from './act.js';
 import { batchTool } from './batch.js';
+import { resizeWindowTool } from './resize-window.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -52,6 +53,7 @@ export const allTools: ToolDefinition[] = [
   observeTool,
   actTool,
   batchTool,
+  resizeWindowTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(

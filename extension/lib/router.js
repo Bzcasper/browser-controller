@@ -11,7 +11,7 @@ import { showLockShield, hideLockShield } from './overlay.js';
 import { getActiveTab, handleNavigate } from '../handlers/navigation.js';
 import { handleClick, handleType, handlePressKey, handleHover, handleSelect, handleClickByText, handleDialog, handleDrag, handleFillForm } from '../handlers/interaction.js';
 import { handleWait, handleScroll, handleSnapshot, handleFind, handleGetPageText, handleEvaluate } from '../handlers/inspection.js';
-import { handleTabs, handleConsole, handleNetwork, handleScreenshot } from '../handlers/tabs.js';
+import { handleTabs, handleConsole, handleNetwork, handleScreenshot, handleResizeWindow } from '../handlers/tabs.js';
 import { handleRunAction, handleUploadFile } from '../handlers/cdp.js';
 import { handleObserve, handleAct } from '../handlers/agent-api.js';
 
@@ -61,6 +61,7 @@ const HANDLERS = {
   browser_text: handleGetPageText,
   browser_observe: handleObserve,
   browser_act: handleAct,
+  browser_resize_window: handleResizeWindow,
 };
 
 /** All tool names the router can dispatch (exported for the drift-guard test). */
