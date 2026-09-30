@@ -26,7 +26,9 @@
     "setup:cursor": "node agent-config/setup.mjs cursor",
     "setup:claude": "node agent-config/setup.mjs claude",
     "context:lint": "ai-context-kit lint",
-    "context:measure": "ai-context-kit measure"
+    "context:measure": "ai-context-kit measure",
+    "bctl": "node scripts/bctl.mjs",
+    "doctor": "node scripts/bctl.mjs doctor"
   },
   "keywords": [
     "mcp",
