@@ -12,10 +12,9 @@ describe('managed daemon deployment contract', () => {
     expect(source).toContain('waiting for managed daemon');
   });
 
-  it('configures the bridge to depend on and connect to the systemd daemon', () => {
-    const unit = fs.readFileSync(path.join(root, 'deploy/systemd/browser-controller-bridge.service'), 'utf8');
-    expect(unit).toContain('Requires=browser-controller-daemon.service');
-    expect(unit).toContain('After=network.target browser-controller-daemon.service');
-    expect(unit).toContain('BROWSER_CONTROLLER_DAEMON_MODE=connect');
+  it('ships a systemd user unit for the shared daemon', () => {
+    const unit = fs.readFileSync(path.join(root, 'deploy/systemd/browser-controller-daemon.service'), 'utf8');
+    expect(unit).toContain('mcp-server/dist/daemon.js');
+    expect(unit).toContain('Restart=always');
   });
 });
