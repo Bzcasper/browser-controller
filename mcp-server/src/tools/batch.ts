@@ -5,7 +5,7 @@ import { toolMap } from './index.js';
 import { parseToolParams } from '../register-tools.js';
 
 /** Tools that must not run inside a batch (recursion / discovery only). */
-const NOT_BATCHABLE = new Set(['browser_batch', 'browser_tools']);
+const NOT_BATCHABLE = new Set(['browser_batch', 'browser_tools', 'browser_shortcuts']);
 const MAX_STEPS = 200;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

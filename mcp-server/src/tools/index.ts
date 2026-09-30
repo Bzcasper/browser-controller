@@ -28,6 +28,7 @@ import { batchTool } from './batch.js';
 import { resizeWindowTool } from './resize-window.js';
 import { gifTool } from './gif.js';
 import { listBrowsersTool, selectBrowserTool } from './browsers.js';
+import { shortcutsTool } from './shortcuts.js';
 
 export const allTools: ToolDefinition[] = [
   navigateTool,
@@ -59,6 +60,7 @@ export const allTools: ToolDefinition[] = [
   gifTool,
   listBrowsersTool,
   selectBrowserTool,
+  shortcutsTool,
 ];
 
 export const toolMap = new Map<string, ToolDefinition>(

@@ -240,7 +240,7 @@ describe('dispatch registry ↔ MCP tool registry (drift guard)', () => {
   // Server-local tools never reach the extension: browser_batch runs other
   // tools' handlers in the MCP process (the meta tool isn't in allTools).
   // browser_batch runs in the MCP process; browser selection is answered by the bridge.
-  const wireTools = allTools.filter((t) => !['browser_batch', 'browser_list_browsers', 'browser_select_browser'].includes(t.name));
+  const wireTools = allTools.filter((t) => !['browser_batch', 'browser_shortcuts', 'browser_list_browsers', 'browser_select_browser'].includes(t.name));
 
   it('every registered MCP tool has an extension handler', () => {
     for (const tool of wireTools) {

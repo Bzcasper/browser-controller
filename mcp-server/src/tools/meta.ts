@@ -90,6 +90,8 @@ const TOOL_GUIDANCE: Record<string, string> = {
     'Use to scroll the page or a specific element (pixel offset, to-element, or top/bottom). Works with virtualized feeds.',
   browser_hover:
     'Use to trigger tooltips / dropdown menus / hover-only UI states (ref, selector or x/y).',
+  browser_shortcuts:
+    'Use for a workflow you repeat (login-free form fill, report export…): save it once with {{variables}}, then run it in ONE call.',
   browser_list_browsers:
     'Use only when several browsers/profiles are connected: shows browserIds and which one this session uses.',
   browser_select_browser:
