@@ -125,7 +125,7 @@ function pageLocate(ref, sel, fb, mode) {
     if (r.error === 'INVALID_SELECTOR') return { success: false, error: `Invalid CSS selector: ${sel}` };
     if (r.el) { el = r.el; via = r.via; }
   }
-  if (!el && mode === 'active') {
+  if (!el && (mode === 'active' || mode === 'focused' || mode === 'focused-clear')) {
     el = document.activeElement;
     // Descend into focused shadow roots / same-origin frames.
     for (let i = 0; el && i < 10; i++) {
@@ -136,6 +136,10 @@ function pageLocate(ref, sel, fb, mode) {
       break;
     }
     via = 'active';
+    // type without a target needs a real field, not the page body.
+    if (mode !== 'active' && (!el || el === document.body || el === document.documentElement)) {
+      return { success: false, error: 'NO_FOCUS' };
+    }
   }
   if (!el) return { success: false, error: 'REF_GONE', _ref: ref, url: location.href };
 
@@ -144,10 +148,10 @@ function pageLocate(ref, sel, fb, mode) {
   const shield = document.getElementById('__bc-lock-shield');
   if (shield) shield.style.pointerEvents = 'none';
 
-  if (mode !== 'active') el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-  if (mode === 'focus' || mode === 'clear') {
+  if (via !== 'active') el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+  if (mode === 'focus' || mode === 'clear' || mode === 'focused-clear') {
     if (typeof el.focus === 'function') el.focus();
-    if (mode === 'clear') {
+    if (mode === 'clear' || mode === 'focused-clear') {
       if (el.isContentEditable) {
         const r = el.ownerDocument.createRange();
         r.selectNodeContents(el);
@@ -206,6 +210,36 @@ function pageRelease() {
   if (!a || a === document.body) return { value: null };
   const value = typeof a.value === 'string' ? a.value : a.isContentEditable ? a.textContent : null;
   return { value: value == null ? null : value.slice(0, 500), focusedTag: a.tagName.toLowerCase() + (a.id ? `#${a.id}` : '') };
+}
+
+/**
+ * Page-side: what is at a top-level viewport point (pierces shadow roots and
+ * same-origin frames), and open the shield pass-through for the agent's input.
+ */
+function pagePointInfo(x, y) {
+  const D = globalThis.__bcDom;
+  if (!D) return { __needDom: true };
+  window.__bcAgentInputUntil = Date.now() + 8000;
+  const shield = document.getElementById('__bc-lock-shield');
+  if (shield) shield.style.pointerEvents = 'none';
+  const inView = x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
+  const el = D.elementAt(x, y);
+  if (!el) return { inView };
+  // Report the control that owns the point (e.g. the <button> around an <svg>).
+  let owner = el;
+  for (let cur = el, i = 0; cur && i < 6; i++) {
+    if (D.isInteractive(cur)) { owner = cur; break; }
+    let r = null;
+    try { r = cur.getRootNode(); } catch {}
+    cur = cur.parentElement || (r && r.host) || null;
+  }
+  const name = D.nameOf(owner).slice(0, 60);
+  return { inView, hit: { role: D.roleOf(owner), ...(name ? { name } : {}), tag: owner.tagName.toLowerCase() } };
+}
+
+/** Describe the element at (x, y) and let trusted input through the shield. */
+export async function pointInfo(tabId, x, y) {
+  try { return (await execDom(tabId, pagePointInfo, [x, y])) || {}; } catch { return {}; /* protected page: input still works */ }
 }
 
 export async function locateTarget(tabId, { ref, selector, fb, mode = 'none' }) {

@@ -2,7 +2,8 @@
  * Inspection handlers (extracted from background.js): wait, scroll, snapshot,
  * find, text, evaluate — the read side of the toolset.
  */
-import { safeExec, execDom, resolveTab, getFallback, assertResponsive } from '../lib/page-exec.js';
+import { safeExec, execDom, resolveTab, getFallback, assertResponsive, hasPoint } from '../lib/page-exec.js';
+import { trustedSender, pointInfo, releaseShield } from '../lib/trusted-input.js';
 import { fallbackByTab, lastSnapshotFingerprints, MAX_RESULT_CHARS, persistSessionState } from '../lib/state.js';
 import { PAGE_FALLBACK_INSTALL } from '../utils/smart-selector.js';
 import { withCdp } from '../lib/cdp-session.js';
@@ -97,6 +98,21 @@ export async function handleWait(params, _sessionId, _agentName, signal) {
 export async function handleScroll(params) {
   const { tabId, direction = 'down', amount = 500, selector, toElement, position } = params;
   await resolveTab(tabId);
+  // x/y: a real mouse-wheel event at that point — scrolls whatever is under
+  // it (inner panels, maps, virtual lists) exactly like a user's wheel.
+  if (hasPoint(params) && !toElement && !position && !selector) {
+    const send = await trustedSender(tabId, true);
+    if (!send) throw new Error(`Scrolling at x/y needs the debugger (CDP), which could not attach to tab ${tabId}. Use selector/toElement instead.`);
+    const deltaX = direction === 'right' ? amount : direction === 'left' ? -amount : 0;
+    const deltaY = direction === 'down' ? amount : direction === 'up' ? -amount : 0;
+    const info = await pointInfo(tabId, params.x, params.y);
+    try {
+      await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: params.x, y: params.y, deltaX, deltaY });
+    } finally {
+      await releaseShield(tabId);
+    }
+    return { success: true, input: 'cdp', at: { x: params.x, y: params.y }, deltaX, deltaY, refsMayBeStale: true, ...(info.hit ? { over: info.hit } : {}) };
+  }
   const fb = getFallback(tabId, toElement);
 
   return execDom(tabId, (_dir, _amt, _sel, _toEl, _pos, _fb) => {

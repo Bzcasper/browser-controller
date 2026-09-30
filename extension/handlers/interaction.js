@@ -3,9 +3,9 @@
  * hover, select, click_text, dialog, drag, fill_form — the write side that
  * drives the page's event system (synthetic events) or CDP when required.
  */
-import { resolveTab, requireTarget, execDom, getFallback } from '../lib/page-exec.js';
+import { resolveTab, requireTarget, hasPoint, execDom, getFallback } from '../lib/page-exec.js';
 import { autoReSnapshot } from './inspection.js';
-import { trustedSender, locateTarget, releaseShield, cdpClickAt, cdpKeyPress, cdpTypeText, keyDefinition } from '../lib/trusted-input.js';
+import { trustedSender, locateTarget, releaseShield, cdpClickAt, cdpKeyPress, cdpTypeText, keyDefinition, modifierBits, pointInfo } from '../lib/trusted-input.js';
 
 export { handleDialog, handleDrag, handleFillForm } from './interaction-advanced.js';
 
@@ -25,11 +25,51 @@ async function refGone(tabId, res, ref, selector) {
 }
 
 const BUTTONS = new Set(['left', 'right', 'middle']);
+const MODS = new Set(['ctrl', 'alt', 'shift', 'meta']);
+
+/** clickCount from the params (1–3; doubleClick = 2). */
+function clickCountOf(params) {
+  const n = Number(params.clickCount);
+  if (Number.isInteger(n) && n >= 1) return Math.min(n, 3);
+  return params.doubleClick ? 2 : 1;
+}
+
+/** Modifier names held during a click ("ctrl+click" opens links in a new tab). */
+function clickModifiers(params) {
+  const mods = Array.isArray(params.modifiers) ? params.modifiers.filter((m) => MODS.has(m)) : [];
+  return modifierBits(mods);
+}
+
+/** Coordinate actions need CDP: there is no element to dispatch synthetic events on. */
+async function requireCdp(tabId, what) {
+  const send = await trustedSender(tabId, true);
+  if (!send) throw new Error(`${what} at x/y needs the debugger (CDP), which could not attach to tab ${tabId}. Use ref or selector instead.`);
+  return send;
+}
+
+/** Real mouse click at viewport coordinates (the same CSS-pixel frame as browser_screenshot). */
+async function clickAtPoint(tabId, params) {
+  const { x, y, button = 'left' } = params;
+  if (!BUTTONS.has(button)) throw new Error(`Unknown button ${button}`);
+  const send = await requireCdp(tabId, 'Clicking');
+  const info = await pointInfo(tabId, x, y);
+  try {
+    await cdpClickAt(send, x, y, { button, clickCount: clickCountOf(params), modifiers: clickModifiers(params) });
+  } finally {
+    await releaseShield(tabId);
+  }
+  return {
+    success: true, input: 'cdp', at: { x, y },
+    ...(info.hit ? { hit: info.hit } : {}),
+    ...(info.inView === false ? { warning: 'point is outside the viewport' } : {}),
+  };
+}
 
 export async function handleClick(params) {
   const { tabId, ref, selector, button = 'left', doubleClick = false, trusted } = params;
   await resolveTab(tabId);
-  requireTarget(params);
+  requireTarget(params, { allowPoint: true });
+  if (!ref && !selector) return clickAtPoint(tabId, params);
   // Snapshot-time descriptor used by the shared resolver when the ref is stale.
   const fb = getFallback(tabId, ref);
 
@@ -41,7 +81,7 @@ export async function handleClick(params) {
     if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref, selector);
     if (loc?.success && loc.visible) {
       try {
-        await cdpClickAt(send, loc.x, loc.y, { button, clickCount: doubleClick ? 2 : 1 });
+        await cdpClickAt(send, loc.x, loc.y, { button, clickCount: clickCountOf(params), modifiers: clickModifiers(params) });
       } finally {
         await releaseShield(tabId);
       }
@@ -128,7 +168,9 @@ export async function handleClick(params) {
 export async function handleType(params) {
   const { tabId, ref, selector, text, clear = false, trusted } = params;
   await resolveTab(tabId);
-  requireTarget(params);
+  // No ref/selector: type into the element that has focus (like a user
+  // typing after clicking a field).
+  const focusedOnly = !ref && !selector;
   // Snapshot-time descriptor used by the shared resolver when the ref is stale.
   const fb = getFallback(tabId, ref);
 
@@ -137,7 +179,12 @@ export async function handleType(params) {
   // `change` until focus leaves the field — press Tab to commit.
   const send = await trustedSender(tabId, trusted);
   if (send) {
-    const loc = await locateTarget(tabId, { ref, selector, fb, mode: clear ? 'clear' : 'focus' });
+    const mode = focusedOnly ? (clear ? 'focused-clear' : 'focused') : clear ? 'clear' : 'focus';
+    const loc = await locateTarget(tabId, { ref, selector, fb, mode });
+    if (loc && loc.error === 'NO_FOCUS') {
+      await releaseShield(tabId);
+      return { success: false, error: 'No field has focus: pass ref/selector, or click the field first.' };
+    }
     if (loc && loc.success === false && loc.error === 'REF_GONE') return refGone(tabId, loc, ref, selector);
     if (loc?.success && (loc.focused || loc.visible)) {
       let after;
@@ -165,7 +212,14 @@ export async function handleType(params) {
     const D = globalThis.__bcDom;
     if (!D) return { __needDom: true };
 
-    const found = D.resolve(_ref, _sel, _fb);
+    let found;
+    if (!_ref && !_sel) {
+      const a = document.activeElement;
+      if (!a || a === document.body) return { success: false, error: 'No field has focus: pass ref/selector, or click the field first.' };
+      found = { el: a, via: 'active' };
+    } else {
+      found = D.resolve(_ref, _sel, _fb);
+    }
     if (found.error === 'INVALID_SELECTOR') return { success: false, error: `Invalid CSS selector: ${_sel}` };
     const el = found.el || null;
     const via = found.via || 'ref';
@@ -234,10 +288,18 @@ export async function handlePressKey(params) {
   await resolveTab(tabId);
   const fb = getFallback(tabId, ref);
 
+  // "ArrowDown ArrowDown Enter" / "ctrl+a Backspace": a space-separated key
+  // sequence; `repeat` presses the whole sequence N times.
+  const raw = String(params.key ?? '');
+  const seq = raw.length > 1 && /\s/.test(raw.trim()) ? raw.trim().split(/\s+/) : [raw];
+  const combos = seq.map((k) => parseKeyCombo(k, params.modifiers || []));
+  const repeat = Math.min(Math.max(1, Number.isInteger(params.repeat) ? params.repeat : 1), 100);
+
   // Trusted path: a real key press, so default actions run (Tab moves focus
   // and fires blur/focusout, Enter submits, arrows drive autocomplete menus).
   let knownKey = true;
-  try { keyDefinition(key); } catch { knownKey = false; }
+  for (const c of combos) { try { keyDefinition(c.key); } catch { knownKey = false; } }
+  if (!knownKey && (combos.length > 1 || repeat > 1)) throw new Error(`Unknown key in "${raw}"`);
   const send = knownKey ? await trustedSender(tabId, trusted) : null;
   if (send) {
     const loc = await locateTarget(tabId, { ref, selector, fb, mode: ref || selector ? 'focus' : 'active' });
@@ -247,13 +309,19 @@ export async function handlePressKey(params) {
     }
     let after;
     try {
-      await cdpKeyPress(send, key, modifiers);
+      for (let r = 0; r < repeat; r++) {
+        for (const c of combos) await cdpKeyPress(send, c.key, c.mods);
+      }
     } finally {
       after = await releaseShield(tabId);
     }
-    return { success: true, key, ...(modifiers.length ? { modifiers } : {}), input: 'cdp', ...(after?.focusedTag ? { focused: after.focusedTag } : {}) };
+    return {
+      success: true, key: combos.length > 1 ? raw : key, ...(modifiers.length && combos.length === 1 ? { modifiers } : {}),
+      ...(repeat > 1 ? { repeat } : {}), input: 'cdp', ...(after?.focusedTag ? { focused: after.focusedTag } : {}),
+    };
   }
 
+  if (combos.length > 1 || repeat > 1) throw new Error('Key sequences and repeat need the debugger (CDP); press keys one at a time with trusted:false.');
   return execDom(tabId, (_key, _mods, _ref, _sel, _fb) => {
     const D = globalThis.__bcDom;
     if (!D) return { __needDom: true };
@@ -292,7 +360,17 @@ export async function handlePressKey(params) {
 export async function handleHover(params) {
   const { tabId, ref, selector, trusted } = params;
   await resolveTab(tabId);
-  requireTarget(params);
+  requireTarget(params, { allowPoint: true });
+  if (!ref && !selector && hasPoint(params)) {
+    const sendAt = await requireCdp(tabId, 'Hovering');
+    const info = await pointInfo(tabId, params.x, params.y);
+    try {
+      await sendAt('Input.dispatchMouseEvent', { type: 'mouseMoved', x: params.x, y: params.y });
+    } finally {
+      await releaseShield(tabId);
+    }
+    return { success: true, input: 'cdp', at: { x: params.x, y: params.y }, ...(info.hit ? { hit: info.hit } : {}) };
+  }
   const fb = getFallback(tabId, ref);
 
   const send = await trustedSender(tabId, trusted);

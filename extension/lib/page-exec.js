@@ -30,10 +30,18 @@ export async function resolveTab(tabId) {
  * misleading "Element undefined is gone from the DOM" after a wasted
  * round-trip (critical audit #10).
  */
-export function requireTarget(params) {
+export function requireTarget(params, { allowPoint = false } = {}) {
+  if (allowPoint && hasPoint(params)) return;
   if (!params.ref && !params.selector) {
-    throw new Error('ref or selector is required (get refs from browser_snapshot / browser_find).');
+    throw new Error(allowPoint
+      ? 'ref or selector is required, or x+y viewport coordinates (get refs from browser_snapshot / browser_find).'
+      : 'ref or selector is required (get refs from browser_snapshot / browser_find).');
   }
+}
+
+/** Viewport coordinates given (and no element locator): act at that point. */
+export function hasPoint(params) {
+  return Number.isFinite(params.x) && Number.isFinite(params.y);
 }
 
 /**

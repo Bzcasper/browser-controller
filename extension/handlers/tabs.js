@@ -33,7 +33,7 @@ function withTimeout(promise, ms, what) {
  * one in its window, so the user's view is never switched, and can downscale
  * (`scale`) or cap the width (`maxWidth`) to save image tokens.
  */
-async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage }) {
+async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage, region }) {
   return withCdp(tabId, async (send) => {
     let metrics = await send('Page.getLayoutMetrics');
     if (!(metrics?.cssVisualViewport?.clientWidth > 0)) {
@@ -42,22 +42,44 @@ async function cdpScreenshot(tabId, { format, quality, scale, maxWidth, fullPage
     }
     const vv = metrics.cssVisualViewport;
     const content = metrics.cssContentSize || metrics.contentSize;
-    const width = fullPage ? Math.ceil(content.width) : vv.clientWidth;
-    const height = fullPage ? Math.min(Math.ceil(content.height), 16_000) : vv.clientHeight;
-    let s = Math.min(1, Math.max(0.05, scale ?? 1));
+    // region: a viewport rectangle (CSS px, same frame as click/hover x/y) —
+    // zoom into small UI with scale > 1.
+    let originX = 0;
+    let originY = 0;
+    let width = fullPage ? Math.ceil(content.width) : vv.clientWidth;
+    let height = fullPage ? Math.min(Math.ceil(content.height), 16_000) : vv.clientHeight;
+    if (region) {
+      originX = Math.max(0, Math.min(region.x, vv.clientWidth - 1));
+      originY = Math.max(0, Math.min(region.y, vv.clientHeight - 1));
+      width = Math.max(1, Math.min(region.width, vv.clientWidth - originX));
+      height = Math.max(1, Math.min(region.height, vv.clientHeight - originY));
+    }
+    let s = Math.min(region ? 4 : 1, Math.max(0.05, scale ?? (region ? 2 : 1)));
     if (maxWidth && width * s > maxWidth) s = maxWidth / width;
     const { data } = await withTimeout(send('Page.captureScreenshot', {
       format,
       ...(format === 'jpeg' ? { quality } : {}),
-      captureBeyondViewport: !!fullPage,
-      clip: { x: fullPage ? 0 : vv.pageX, y: fullPage ? 0 : vv.pageY, width, height, scale: s },
+      captureBeyondViewport: !!fullPage && !region,
+      clip: {
+        x: fullPage && !region ? 0 : vv.pageX + originX,
+        y: fullPage && !region ? 0 : vv.pageY + originY,
+        width, height, scale: s,
+      },
     }), CDP_CAPTURE_TIMEOUT_MS, 'Page.captureScreenshot');
-    return { data, width: Math.round(width * s), height: Math.round(height * s) };
+    // How image pixels map to the viewport coordinates click/hover/scroll take:
+    // viewportX = origin[0] + imageX / scale (fullPage: page coordinates instead).
+    const frame = {
+      scale: Math.round(s * 1000) / 1000,
+      origin: [Math.round(originX), Math.round(originY)],
+      viewport: [Math.round(vv.clientWidth), Math.round(vv.clientHeight)],
+      ...(fullPage && !region ? { page: true, scrollY: Math.round(vv.pageY) } : {}),
+    };
+    return { data, width: Math.round(width * s), height: Math.round(height * s), frame };
   });
 }
 
 export async function handleScreenshot(params) {
-  const { tabId, format = 'png', quality = 80, scale, maxWidth, fullPage = false } = params;
+  const { tabId, format = 'png', quality = 80, scale, maxWidth, fullPage = false, region } = params;
   const tab = await resolveTab(tabId);
   const protectedPage = /^(chrome|chrome-extension|devtools|edge|about):/i.test(tab.url || '');
   let cdpError = null;
@@ -66,8 +88,8 @@ export async function handleScreenshot(params) {
     // locked — always take it out of the picture; the router restores it.
     const wasLocked = !!tabLocks.owner(tabId);
     await hideLockShield(tabId);
-    const opts = { format, quality, scale, maxWidth, fullPage };
-    const done = (shot, via) => ({ success: true, format, via, width: shot.width, height: shot.height, data: shot.data });
+    const opts = { format, quality, scale, maxWidth, fullPage, region };
+    const done = (shot, via) => ({ success: true, format, via, width: shot.width, height: shot.height, frame: shot.frame, data: shot.data });
     try {
       if (tab.active) {
         const shot = await cdpScreenshot(tabId, opts);
