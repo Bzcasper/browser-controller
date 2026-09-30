@@ -17,6 +17,8 @@ export const GIF_FRAME_TOOLS = new Set([
 ]);
 
 const MAX_FRAMES_CAP = 500;
+/** Export travels in parts: the daemon's WebSocket frames are capped at 1 MB. */
+export const GIF_PART_BYTES = 600_000;
 /** tabId -> { frames, width, maxFrames, activate, recording, skipped, startedAt } */
 const recordings = new Map();
 
@@ -127,12 +129,21 @@ export async function handleGif(params) {
     }
     case 'export': {
       const rec = recordings.get(tabId);
-      if (!rec || rec.frames.length === 0) throw new Error('No frames recorded for this tab.');
+      if (!rec || (rec.frames.length === 0 && !rec.encoded)) throw new Error('No frames recorded for this tab.');
       rec.recording = false;
-      const { bytes, width, height } = await encodeRecording(rec);
+      // Encode once (part 0), then hand the bytes out part by part.
+      const part = Number.isInteger(params.part) && params.part > 0 ? params.part : 0;
+      if (part === 0 || !rec.encoded) rec.encoded = await encodeRecording(rec);
+      const { bytes, width, height } = rec.encoded;
+      const parts = Math.max(1, Math.ceil(bytes.length / GIF_PART_BYTES));
+      if (part >= parts) throw new Error(`part ${part} out of range (${parts} parts)`);
+      const chunk = bytes.subarray(part * GIF_PART_BYTES, (part + 1) * GIF_PART_BYTES);
       const frames = rec.frames.length;
-      if (params.clear !== false) recordings.delete(tabId);
-      return { success: true, frames, width, height, bytes: bytes.length, gifBase64: bytesToB64(bytes) };
+      if (part === parts - 1) {
+        rec.encoded = null;
+        if (params.clear !== false) recordings.delete(tabId);
+      }
+      return { success: true, frames, width, height, bytes: bytes.length, part, parts, gifBase64: bytesToB64(chunk) };
     }
     default:
       throw new Error(`Unknown action: ${action}`);

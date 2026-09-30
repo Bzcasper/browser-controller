@@ -29,19 +29,28 @@ export const gifTool: ToolDefinition = {
   }),
   timeoutMs: 120_000,
   async handler(host, params) {
+    const call = (p: Record<string, unknown>) => host.callTool('browser_gif', p) as Promise<Record<string, unknown>>;
     let result: Record<string, unknown>;
     try {
-      result = await host.callTool('browser_gif', params) as Record<string, unknown>;
+      result = await call(params);
     } catch (err) {
       const payload = payloadOf(err);
       if (payload !== undefined) return jsonError(payload);
       throw err;
     }
     if (params.action !== 'export' || typeof result.gifBase64 !== 'string') return textResult(JSON.stringify(result));
+    // The GIF arrives in parts (WebSocket frames are capped at 1 MB).
+    const chunks = [Buffer.from(result.gifBase64, 'base64')];
+    const parts = typeof result.parts === 'number' ? result.parts : 1;
+    for (let part = 1; part < parts; part++) {
+      const next = await call({ ...params, part });
+      if (typeof next.gifBase64 !== 'string') throw new Error(`GIF export part ${part} returned no data`);
+      chunks.push(Buffer.from(next.gifBase64, 'base64'));
+    }
     const file = path.resolve(typeof params.path === 'string' && params.path ? params.path : defaultGifPath());
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, Buffer.from(result.gifBase64, 'base64'));
-    const { gifBase64: _drop, ...rest } = result;
+    fs.writeFileSync(file, Buffer.concat(chunks));
+    const { gifBase64: _drop, part: _part, parts: _parts, ...rest } = result;
     return textResult(JSON.stringify({ ...rest, path: file }));
   },
 };
