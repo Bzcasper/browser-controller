@@ -148,20 +148,35 @@ export async function handleScreenshot(params) {
 }
 
 export async function handleConsole(params) {
-  const { tabId, clear = false } = params;
+  const { tabId, clear = false, pattern, level, limit } = params;
   // Validate the tab (audit finding, seen live): a wrong tabId used to return
   // an empty success instead of an actionable error.
   await resolveTab(tabId);
   const buf = getTabBuffer(consoleByTab, tabId);
-  const msgs = [...buf];
+  let msgs = [...buf];
+  const total = msgs.length;
+  if (level) {
+    const want = new Set((Array.isArray(level) ? level : [level]).map((l) => String(l).toLowerCase()));
+    msgs = msgs.filter((m) => want.has(String(m.level).toLowerCase()));
+  }
+  if (pattern) {
+    let re;
+    try { re = new RegExp(pattern, 'i'); } catch (err) { throw new Error(`Invalid pattern regex: ${err?.message || err}`); }
+    msgs = msgs.filter((m) => re.test(m.text));
+  }
+  if (Number.isInteger(limit) && limit > 0 && msgs.length > limit) msgs = msgs.slice(-limit);
   if (clear) consoleByTab.set(tabId, []);
-  return { success: true, messages: msgs };
+  return { success: true, messages: msgs, ...(msgs.length !== total ? { total } : {}) };
 }
 
 export async function handleNetwork(params) {
-  const { tabId, filter, clear = false, limit } = params;
+  const { tabId, clear = false, limit, filter, urlPattern, failed } = params;
   await resolveTab(tabId); // same as handleConsole — no empty fake successes
   let reqs = [...getTabBuffer(networkByTab, tabId)];
+  // urlPattern: plain substring (Claude-in-Chrome style); filter: regex.
+  if (urlPattern) reqs = reqs.filter((r) => String(r.url).includes(urlPattern));
+  // failed:true = only requests that errored (DNS, blocked, aborted…) or got a 4xx/5xx.
+  if (failed === true) reqs = reqs.filter((r) => r.error || (typeof r.status === 'number' && r.status >= 400));
   if (filter) {
     // An invalid pattern used to throw a raw SyntaxError out of the handler;
     // surface it as an actionable error instead.
