@@ -89,7 +89,7 @@ export function findMarkedExpression(token) {
 function pagePutFile(ref, sel, fb, b64, mime, name, x, y) {
   const D = globalThis.__bcDom;
   if (!D) return { __needDom: true };
-  let target = null;
+  let target;
   if (ref || sel) target = D.resolve(ref, sel, fb).el;
   else if (Number.isFinite(x) && Number.isFinite(y)) target = D.elementAt(x, y);
   else target = (D.queryAll('input[type="file"]', true) || [])[0] || null;

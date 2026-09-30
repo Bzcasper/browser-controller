@@ -39,7 +39,7 @@
 
   // Page console entries from console-main.js (MAIN world), JSON on a DOM event.
   document.addEventListener('__bc_console_entry', (e) => {
-    let entry = null;
+    let entry;
     try { entry = JSON.parse(e.detail); } catch { return; }
     if (!entry || typeof entry.text !== 'string') return;
     if (entry.text.indexOf('ResizeObserver loop') !== -1) return;

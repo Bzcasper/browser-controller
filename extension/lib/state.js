@@ -144,3 +144,12 @@ export function dropTabState(tabId) {
   observationSnapshots.dropTab(tabId);
   tabLocks.release(tabId);
 }
+
+// Short refs ("s4k2-17"): a per-worker salt keeps refs from a recycled service
+// worker from colliding with live ones in the page registry.
+const REF_SALT = Math.random().toString(36).slice(2, 4);
+let refSeq = 0;
+export function nextRefPrefix(kind) {
+  refSeq = (refSeq + 1) % 1296;
+  return `${kind}${REF_SALT}${refSeq.toString(36)}-`;
+}

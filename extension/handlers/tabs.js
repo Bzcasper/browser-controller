@@ -161,7 +161,7 @@ export async function handleConsole(params) {
   }
   if (pattern) {
     let re;
-    try { re = new RegExp(pattern, 'i'); } catch (err) { throw new Error(`Invalid pattern regex: ${err?.message || err}`); }
+    try { re = new RegExp(pattern, 'i'); } catch (err) { throw new Error(`Invalid pattern regex: ${err?.message || err}`, { cause: err }); }
     msgs = msgs.filter((m) => re.test(m.text));
   }
   if (Number.isInteger(limit) && limit > 0 && msgs.length > limit) msgs = msgs.slice(-limit);
